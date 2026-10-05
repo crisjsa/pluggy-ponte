@@ -39,7 +39,7 @@ await client.connect(
 );
 
 const { tools } = await client.listTools();
-check(tools.length === 3, `ferramentas: ${tools.map((t) => t.name).join(", ")}`);
+check(tools.length === 4, `ferramentas: ${tools.map((t) => t.name).join(", ")}`);
 check(tools.every((t) => t.annotations?.readOnlyHint === true), "todas marcadas como somente leitura");
 
 type Resultado = { structuredContent?: any; isError?: boolean; content?: any };
@@ -84,6 +84,22 @@ for (const f of faturas.structuredContent.faturas) {
   console.log(`   💳 ${f.contaNome}: fatura aberta ${brl.format(f.valorEstimado)} (${f.quantidadeLancamentos} lançamentos), sincronizado em ${new Date(f.ultimaSincronizacao).toLocaleString("pt-BR")}`);
 }
 check(faturas.structuredContent.faturas.length > 0, "listar_faturas_abertas respondeu");
+
+// listar_faturas: histórico por mês (mês de referência = mês do vencimento).
+const todas: any[] = (await chamar("listar_faturas")).structuredContent.faturas;
+const abertas = todas.filter((f) => f.situacao === "aberta");
+check(abertas.length >= 1 && todas.length > abertas.length, `listar_faturas: ${abertas.length} aberta(s) + ${todas.length - abertas.length} fechadas`);
+for (const f of todas.slice(0, 4)) {
+  console.log(`   ${f.mesReferencia}  vence ${f.vencimento}  fecha ${f.fechamento ?? "—"}  ${brl.format(f.valor).padStart(12)}  ${f.situacao}${f.estimativa ? " (estimativa)" : ""}${f.paga ? " · paga" : ""}`);
+}
+const porMes = async (mes: string) => (await chamar("listar_faturas", { mes })).structuredContent.faturas as any[];
+const [out, nov] = [await porMes("2026-10"), await porMes("2026-11")];
+check(out.length === 1 && out[0].situacao === "fechada" && out[0].paga, `mes 2026-10 → ${out.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")}`);
+const valorAberta = faturas.structuredContent.faturas[0]?.valorEstimado;
+check(nov.length === 1 && nov[0].situacao === "aberta" && nov[0].valor === valorAberta, `mes 2026-11 → ${nov.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")} (igual a listar_faturas_abertas)`);
+check(new Set(todas.filter((f) => f.contaId === todas[0].contaId).map((f) => f.valor)).size > 1, "meses diferentes têm valores diferentes");
+const mesInvalido = await chamar("listar_faturas", { mes: "outubro" });
+check(mesInvalido.isError === true, "mês em formato inválido é recusado");
 
 await client.close();
 console.log(falhas === 0 ? "\nTudo certo." : `\n${falhas} verificação(ões) falharam.`);

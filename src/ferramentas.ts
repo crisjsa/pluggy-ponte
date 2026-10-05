@@ -3,7 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { Account, PluggyClient } from "./pluggy.ts";
-import { estimateOpenBill, openBillSearchStart } from "./fatura.ts";
+import { estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
 
@@ -164,6 +164,97 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
           };
         }),
       );
+
+      return ok({ faturas });
+    },
+  );
+
+  server.registerTool(
+    "listar_faturas",
+    {
+      title: "Listar faturas",
+      description:
+        "Lista as faturas de cada cartão: as fechadas (últimos ~12 meses, valores do banco) e a aberta " +
+        "(valor ESTIMADO, com vencimento previsto). `mesReferencia` (AAAA-MM) é o mês do VENCIMENTO, como " +
+        "o banco nomeia a fatura. Use `mes` para filtrar um mês.",
+      inputSchema: z.object({
+        mes: z
+          .string()
+          .regex(/^\d{4}-\d{2}$/, "Use o formato AAAA-MM")
+          .optional()
+          .describe("Filtra pelo mês de referência (vencimento), ex.: 2026-10"),
+        contaId: z.string().optional().describe("Filtra por um cartão (id de listar_contas)."),
+      }),
+      outputSchema: z.object({
+        faturas: z.array(
+          z.object({
+            contaId: z.string(),
+            contaNome: z.string(),
+            mesReferencia: z.string().nullable().describe("Mês do vencimento (AAAA-MM)"),
+            vencimento: z.string().nullable(),
+            fechamento: z.string().nullable(),
+            valor: z.number(),
+            situacao: z.enum(["fechada", "aberta"]),
+            estimativa: z.boolean().describe("true na fatura aberta: valor e datas são previsões"),
+            paga: z.boolean(),
+            valorPago: z.number(),
+          }),
+        ),
+      }),
+      annotations: SOMENTE_LEITURA,
+    },
+    async ({ mes, contaId }) => {
+      let cartoes = (await listarTodasAsContas(pluggy, itemIds)).filter((c) => c.type === "CREDIT");
+      if (contaId) {
+        cartoes = cartoes.filter((c) => c.id === contaId);
+        if (cartoes.length === 0) return erro(`Cartão ${contaId} não encontrado. Use listar_contas para ver os ids.`);
+      }
+      const arred = (n: number) => Math.round(n * 100) / 100;
+
+      const porCartao = await Promise.all(
+        cartoes.map(async (acc) => {
+          const bills = await pluggy.listBills(acc.id);
+          const ultima = bills[0];
+          const transacoes = await pluggy.listTransactions(acc.id, openBillSearchStart(ultima), hoje());
+          const aberta = estimateOpenBill(transacoes, bills);
+          const previstas = openBillDates(ultima);
+          const base = { contaId: acc.id, contaNome: accountName(acc) };
+
+          const fechadas = bills.map((b) => {
+            const pago = arred((b.payments ?? []).reduce((s, p) => s + p.amount, 0));
+            return {
+              ...base,
+              mesReferencia: b.dueDate.slice(0, 7),
+              vencimento: b.dueDate.slice(0, 10),
+              fechamento: b.billClosingDate?.slice(0, 10) ?? null,
+              valor: b.totalAmount,
+              situacao: "fechada" as const,
+              estimativa: false,
+              paga: pago >= b.totalAmount - 0.01,
+              valorPago: pago,
+            };
+          });
+
+          const faturaAberta = {
+            ...base,
+            mesReferencia: previstas.dueDate?.slice(0, 7) ?? null,
+            vencimento: previstas.dueDate,
+            fechamento: previstas.closingDate,
+            valor: arred(aberta.total),
+            situacao: "aberta" as const,
+            estimativa: true,
+            paga: false,
+            valorPago: 0,
+          };
+
+          return [faturaAberta, ...fechadas];
+        }),
+      );
+
+      const faturas = porCartao
+        .flat()
+        .filter((f) => !mes || f.mesReferencia === mes)
+        .toSorted((a, b) => (b.vencimento ?? "9999").localeCompare(a.vencimento ?? "9999"));
 
       return ok({ faturas });
     },

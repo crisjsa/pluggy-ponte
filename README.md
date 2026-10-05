@@ -15,6 +15,7 @@ Nada aqui escreve, paga ou move dinheiro: todas as ferramentas só leem.
 | `listar_contas` | — | Contas e cartões com saldo (no cartão, o saldo é o limite usado, incluindo parcelas futuras) |
 | `listar_transacoes` | `dataInicio`, `dataFim` (AAAA-MM-DD, padrão últimos 30 dias, máx. 366), `contaId` (opcional) | Lista de transações (formato abaixo) |
 | `listar_faturas_abertas` | `incluirLancamentos` (opcional) | Fatura aberta **estimada** de cada cartão, última fatura fechada e data da última sincronização |
+| `listar_faturas` | `mes` (AAAA-MM, opcional), `contaId` (opcional) | Faturas de cada cartão por mês: as fechadas (~12 meses) e a aberta (estimativa). `mesReferencia` = mês do **vencimento** |
 
 Formato de cada transação:
 
