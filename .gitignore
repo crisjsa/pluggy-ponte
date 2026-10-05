@@ -1,0 +1,11 @@
+# Segredos: NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# Dependencias e build
+node_modules/
+dist/
+
+# Fotos locais de transações (dados financeiros)
+.snapshots/
