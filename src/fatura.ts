@@ -7,7 +7,7 @@
 //   - o resto (compras, parcelas do mês, estornos) é somado.
 // É uma estimativa: transações PENDING ainda podem mudar ou sumir.
 
-import type { Bill, Transaction } from "./pluggy.ts";
+import { amountBRL, type Bill, type Transaction } from "./pluggy.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
 
 export interface OpenBill {
@@ -17,10 +17,11 @@ export interface OpenBill {
 }
 
 export function estimateOpenBill(cardTransactions: Transaction[], closedBills: Bill[]): OpenBill {
-  const isBillPayment = billPaymentMatcher(closedBills).cartao;
+  const cartaoId = cardTransactions[0]?.accountId ?? "";
+  const isBillPayment = billPaymentMatcher(new Map([[cartaoId, closedBills]]), cardTransactions).cartao;
   const transactions = cardTransactions.filter((t) => !t.creditCardMetadata?.billId && !isBillPayment(t));
 
-  const sum = (list: Transaction[]) => list.reduce((acc, t) => acc + t.amount, 0);
+  const sum = (list: Transaction[]) => list.reduce((acc, t) => acc + amountBRL(t), 0);
   return {
     total: sum(transactions),
     pendingTotal: sum(transactions.filter((t) => t.status === "PENDING")),
@@ -42,6 +43,18 @@ export function openBillDates(lastClosedBill: Bill | undefined): { dueDate: stri
   return {
     dueDate: addMonths(lastClosedBill.dueDate, 1),
     closingDate: lastClosedBill.billClosingDate ? addMonths(lastClosedBill.billClosingDate, 1) : null,
+  };
+}
+
+// Mês da fatura (AAAA-MM, mês do vencimento) de cada compra de um cartão.
+// Com billId: a fatura fechada que a própria Pluggy vinculou. Sem billId: a fatura aberta.
+// billId de uma fatura que a Pluggy não devolve mais (muito antiga): null.
+export function billMonthResolver(closedBills: Bill[]): (t: Transaction) => string | null {
+  const porId = new Map(closedBills.map((b) => [b.id, b.dueDate.slice(0, 7)]));
+  const mesDaAberta = openBillDates(closedBills[0]).dueDate?.slice(0, 7) ?? null;
+  return (t) => {
+    const billId = t.creditCardMetadata?.billId;
+    return billId ? (porId.get(billId) ?? null) : mesDaAberta;
   };
 }
 

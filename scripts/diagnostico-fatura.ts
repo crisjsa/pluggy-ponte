@@ -1,7 +1,7 @@
 // Diagnóstico da fatura aberta: ajuda a comparar o cálculo com o app do banco.
 // Uso: npm run diagnostico-fatura
 
-import { PluggyClient, loadConfig, type Transaction } from "../src/pluggy.ts";
+import { PluggyClient, amountBRL, loadConfig, type Transaction } from "../src/pluggy.ts";
 import { estimateOpenBill, openBillSearchStart } from "../src/fatura.ts";
 
 process.loadEnvFile(".env");
@@ -18,7 +18,7 @@ threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 const since3 = threeDaysAgo.toISOString().slice(0, 10);
 
 const isFeeOrCredit = (t: Transaction) =>
-  t.amount < 0 || /IOF|ESTORNO|CR[EÉ]DITO|ANUIDADE|TARIFA|JUROS/i.test(t.description) || t.operationType === "ESTORNO";
+  amountBRL(t) < 0 || /IOF|ESTORNO|CR[EÉ]DITO|ANUIDADE|TARIFA|JUROS/i.test(t.description) || t.operationType === "ESTORNO";
 
 for (const itemId of itemIds) {
   const item = await pluggy.getItem(itemId);
@@ -40,7 +40,7 @@ for (const itemId of itemIds) {
       const m = t.creditCardMetadata;
       const inst = m?.totalInstallments ? ` (${m.installmentNumber}/${m.totalInstallments})` : "";
       const desc = (t.description.trim() + inst).padEnd(42).slice(0, 42);
-      console.log(`  ${brDate(t.date)}  ${desc} ${brl.format(t.amount).padStart(13)}  ${t.status.padEnd(7)}  ${why(t)}`);
+      console.log(`  ${brDate(t.date)}  ${desc} ${brl.format(amountBRL(t)).padStart(13)}  ${t.status.padEnd(7)}  ${why(t)}`);
     };
     const byDate = (list: Transaction[]) => list.toSorted((a, b) => b.date.localeCompare(a.date));
 

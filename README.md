@@ -32,13 +32,17 @@ Formato de cada transação:
   "status": "pendente",
   "categoriaPluggy": "Shopping",
   "categoriaPluggyId": "08000000",
+  "mesFatura": "2026-11",
   "pagamentoFatura": false
 }
 ```
 
 - `id`: id da Pluggy. O app atualiza pelo id e apaga as pendentes que deixarem de vir.
-- `valor`: sempre positivo; o sentido está em `tipo` (`entrada` / `saida`).
-- `pagamentoFatura`: `true` nos **dois lados** do pagamento de fatura (débito na conta e entrada no cartão). Some só um deles para não contar em dobro.
+- `valor`: sempre positivo e **em reais**, inclusive em compras internacionais; o sentido está em `tipo` (`entrada` / `saida`).
+- `mesFatura`: só em cartão. Mês (AAAA-MM, do vencimento) da fatura da compra, pelo vínculo da Pluggy; sem fatura fechada vinculada, o mês da fatura aberta. Em conta corrente, `null`.
+- `pagamentoFatura`: `true` nos **dois lados** do pagamento de fatura (débito na conta e entrada no cartão). Na conta, só quando há par num cartão conectado: pagar um cartão não conectado é gasto. Um pagamento feito hoje pode ficar `false` até o banco do cartão sincronizar.
+
+Para conferir se a soma das compras de cada `mesFatura` bate com o valor da fatura: `npm start` e, em outro terminal, `npm run conferir-faturas`.
 - A fatura aberta é uma estimativa: pode ficar abaixo do app do banco se algum lançamento ainda não sincronizou (veja `ultimaSincronizacao`).
 
 ---

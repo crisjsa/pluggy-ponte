@@ -2,7 +2,7 @@
 // Sem acesso à rede: só transformação de dados.
 
 import * as z from "zod/v4";
-import type { Account, Transaction } from "./pluggy.ts";
+import { amountBRL, type Account, type Transaction } from "./pluggy.ts";
 
 export const TransacaoSchema = z.object({
   id: z.string().describe("ID da transação na Pluggy. Use para evitar duplicadas."),
@@ -16,6 +16,13 @@ export const TransacaoSchema = z.object({
   status: z.enum(["pendente", "confirmada"]),
   categoriaPluggy: z.string().nullable().describe("Categoria da Pluggy, sem tradução (ex.: \"Food delivery\")"),
   categoriaPluggyId: z.string().nullable().describe("ID da categoria na Pluggy"),
+  mesFatura: z
+    .string()
+    .nullable()
+    .describe(
+      "Só cartão: mesReferencia (AAAA-MM) da fatura a que a compra pertence, pelo vínculo da Pluggy. " +
+        "Sem fatura fechada vinculada: mês da fatura aberta. Conta corrente: null.",
+    ),
   pagamentoFatura: z
     .boolean()
     .describe("true no pagamento de fatura de cartão (débito na conta e entrada no cartão). Some só um dos lados para não contar em dobro."),
@@ -51,9 +58,10 @@ export function toConta(acc: Account, banco: string | null, ultimaAtualizacao: s
 
 // O sinal do amount da Pluggy é invertido entre conta e cartão:
 //   conta:  negativo = saída     | cartão: positivo = compra (saída)
-export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boolean): Transacao {
+export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boolean, mesFatura: string | null): Transacao {
   const cartao = acc.type === "CREDIT";
-  const saida = cartao ? t.amount > 0 : t.amount < 0;
+  const emReais = amountBRL(t);
+  const saida = cartao ? emReais > 0 : emReais < 0;
   const m = t.creditCardMetadata;
   const parcela = m?.totalInstallments ? ` (${m.installmentNumber}/${m.totalInstallments})` : "";
 
@@ -62,7 +70,7 @@ export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boole
     data: t.date.slice(0, 10),
     // O banco manda espaços de preenchimento ("ACAI FRUTO DO PARA     BELO HORIZONT").
     descricao: t.description.replace(/\s+/g, " ").trim() + parcela,
-    valor: Math.abs(t.amount),
+    valor: Math.abs(emReais), // em reais, mesmo em compra internacional
     tipo: saida ? "saida" : "entrada",
     contaId: acc.id,
     contaNome: accountName(acc),
@@ -70,6 +78,7 @@ export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boole
     status: t.status === "PENDING" ? "pendente" : "confirmada",
     categoriaPluggy: t.category ?? null,
     categoriaPluggyId: t.categoryId ?? null,
+    mesFatura: cartao ? mesFatura : null,
     pagamentoFatura,
   };
 }

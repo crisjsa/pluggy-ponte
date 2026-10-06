@@ -2,7 +2,7 @@
 // Uso: npm run transacoes          (últimos 30 dias)
 //      npm run transacoes -- 7     (últimos 7 dias)
 
-import { PluggyClient, loadConfig, type Account, type Transaction } from "../src/pluggy.ts";
+import { PluggyClient, amountBRL, loadConfig, type Account, type Transaction } from "../src/pluggy.ts";
 
 process.loadEnvFile(".env");
 
@@ -17,7 +17,7 @@ const pluggy = new PluggyClient(clientId, clientSecret);
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 const brDate = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
-const sum = (list: Transaction[]) => list.reduce((acc, t) => acc + t.amount, 0);
+const sum = (list: Transaction[]) => list.reduce((acc, t) => acc + amountBRL(t), 0);
 
 const to = new Date();
 const from = new Date(to);
@@ -28,7 +28,7 @@ function printTransaction(t: Transaction) {
   const installment = m?.totalInstallments ? ` (${m.installmentNumber}/${m.totalInstallments})` : "";
   const pending = t.status === "PENDING" ? " ⏳" : "";
   const desc = (t.description.trim() + installment).padEnd(40).slice(0, 40);
-  console.log(`  ${brDate(t.date)}  ${desc} ${brl.format(t.amount).padStart(14)}${pending}`);
+  console.log(`  ${brDate(t.date)}  ${desc} ${brl.format(amountBRL(t)).padStart(14)}${pending}`);
 }
 
 const accounts: Account[] = [];
@@ -48,12 +48,12 @@ for (const acc of accounts) {
 
   // Lembre: o sinal é invertido entre conta e cartão (ver src/pluggy.ts).
   if (acc.type === "BANK") {
-    const entradas = sum(transactions.filter((t) => t.amount > 0));
-    const saidas = sum(transactions.filter((t) => t.amount < 0));
+    const entradas = sum(transactions.filter((t) => amountBRL(t) > 0));
+    const saidas = sum(transactions.filter((t) => amountBRL(t) < 0));
     console.log(`  Entradas: ${brl.format(entradas)} | Saídas: ${brl.format(saidas)} | Resultado: ${brl.format(entradas + saidas)}`);
   } else {
-    const compras = sum(transactions.filter((t) => t.amount > 0));
-    const creditos = sum(transactions.filter((t) => t.amount < 0));
+    const compras = sum(transactions.filter((t) => amountBRL(t) > 0));
+    const creditos = sum(transactions.filter((t) => amountBRL(t) < 0));
     console.log(`  Compras: ${brl.format(compras)} | Pagamentos e estornos: ${brl.format(creditos)}`);
   }
 }

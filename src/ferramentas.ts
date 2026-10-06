@@ -3,7 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { Account, PluggyClient } from "./pluggy.ts";
-import { estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
+import { billMonthResolver, estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
 import { bancosPorConta } from "./bancos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
@@ -96,14 +96,15 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
       // buscamos também TODOS os cartões, com folga de 3 dias em cada ponta do período.
       const cartoes = todasAsContas.filter((c) => c.type === "CREDIT");
       const buscar = [...new Map([...pedidas, ...cartoes].map((c) => [c.id, c])).values()];
-      const [faturas, porConta] = await Promise.all([
-        Promise.all(cartoes.map((c) => pluggy.listBills(c.id))).then((l) => l.flat()),
+      const [faturasPorCartao, porConta] = await Promise.all([
+        Promise.all(cartoes.map(async (c) => [c.id, await pluggy.listBills(c.id)] as const)).then((l) => new Map(l)),
         Promise.all(
           buscar.map(async (acc) => ({ acc, txs: await pluggy.listTransactions(acc.id, somarDias(inicio, -3), somarDias(fim, 3)) })),
         ),
       ]);
       const transacoesDosCartoes = porConta.filter(({ acc }) => acc.type === "CREDIT").flatMap(({ txs }) => txs);
-      const ehPagamento = billPaymentMatcher(faturas, transacoesDosCartoes);
+      const ehPagamento = billPaymentMatcher(faturasPorCartao, transacoesDosCartoes);
+      const mesDaFatura = new Map([...faturasPorCartao].map(([id, bills]) => [id, billMonthResolver(bills)]));
 
       const idsPedidos = new Set(pedidas.map((c) => c.id));
       const noPeriodo = (data: string) => data.slice(0, 10) >= inicio && data.slice(0, 10) <= fim;
@@ -112,7 +113,11 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
         .flatMap(({ acc, txs }) =>
           txs
             .filter((t) => noPeriodo(t.date))
-            .map((t) => toTransacao(t, acc, acc.type === "CREDIT" ? ehPagamento.cartao(t) : ehPagamento.contaCorrente(t))),
+            .map((t) =>
+              acc.type === "CREDIT"
+                ? toTransacao(t, acc, ehPagamento.cartao(t), mesDaFatura.get(acc.id)?.(t) ?? null)
+                : toTransacao(t, acc, ehPagamento.contaCorrente(t), null),
+            ),
         )
         .toSorted((a, b) => b.data.localeCompare(a.data));
 
@@ -175,12 +180,14 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
               ? {
                   fechamento: ultima.billClosingDate?.slice(0, 10) ?? null,
                   vencimento: ultima.dueDate.slice(0, 10),
-                  valor: ultima.totalAmount,
+                  valor: arred(ultima.totalAmount),
                   paga: pago >= ultima.totalAmount - 0.01,
                 }
               : null,
             // Pagamentos já foram excluídos da fatura aberta, então nenhum lançamento aqui é pagamento.
-            ...(incluirLancamentos && { lancamentos: aberta.transactions.map((t) => toTransacao(t, acc, false)) }),
+            ...(incluirLancamentos && {
+              lancamentos: aberta.transactions.map((t) => toTransacao(t, acc, false, openBillDates(ultima).dueDate?.slice(0, 7) ?? null)),
+            }),
           };
         }),
       );
@@ -247,7 +254,7 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
               mesReferencia: b.dueDate.slice(0, 7),
               vencimento: b.dueDate.slice(0, 10),
               fechamento: b.billClosingDate?.slice(0, 10) ?? null,
-              valor: b.totalAmount,
+              valor: arred(b.totalAmount), // a Pluggy às vezes manda 4 casas (ex.: 472.5455)
               situacao: "fechada" as const,
               estimativa: false,
               paga: pago >= b.totalAmount - 0.01,

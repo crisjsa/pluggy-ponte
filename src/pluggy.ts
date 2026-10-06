@@ -47,7 +47,9 @@ export interface Transaction {
   accountId: string;
   date: string;
   description: string;
-  amount: number;
+  amount: number; // na moeda da compra (currencyCode): numa compra em dólar, vem em dólar
+  amountInAccountCurrency?: number | null; // o mesmo valor convertido para a moeda da conta (reais)
+  currencyCode?: string | null;
   type: "DEBIT" | "CREDIT";
   status: "PENDING" | "POSTED";
   category: string | null;
@@ -59,6 +61,10 @@ export interface Transaction {
     totalInstallments?: number | null;
   } | null;
 }
+
+// Valor em reais. Use sempre este em contas: `amount` vem na moeda da compra
+// (ex.: assinatura de US$ 21,18 que custou R$ 114,52 na fatura).
+export const amountBRL = (t: Transaction): number => t.amountInAccountCurrency ?? t.amount;
 
 export interface Item {
   id: string;

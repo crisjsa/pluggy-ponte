@@ -14,6 +14,7 @@
     "transacoes": "node scripts/listar-transacoes.ts",
     "diagnostico-fatura": "node scripts/diagnostico-fatura.ts",
     "conferir-pendentes": "node scripts/conferir-pendentes.ts",
+    "conferir-faturas": "node scripts/conferir-faturas.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
