@@ -87,24 +87,34 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
       if (inicio > fim) return erro(`dataInicio (${inicio}) é depois de dataFim (${fim}).`);
       if (diasEntre(inicio, fim) > MAX_DIAS) return erro(`Período maior que ${MAX_DIAS} dias. Divida em partes menores.`);
 
-      let contas = await listarTodasAsContas(pluggy, itemIds);
-      if (contaId) {
-        contas = contas.filter((c) => c.id === contaId);
-        if (contas.length === 0) return erro(`Conta ${contaId} não encontrada. Use listar_contas para ver os ids.`);
-      }
+      const todasAsContas = await listarTodasAsContas(pluggy, itemIds);
+      const pedidas = contaId ? todasAsContas.filter((c) => c.id === contaId) : todasAsContas;
+      if (pedidas.length === 0) return erro(`Conta ${contaId} não encontrada. Use listar_contas para ver os ids.`);
 
-      // As faturas de TODOS os cartões são necessárias mesmo filtrando uma conta corrente:
-      // é nelas que estão os pagamentos que marcam pagamentoFatura no débito da conta.
-      const todosOsCartoes = (contaId ? await listarTodasAsContas(pluggy, itemIds) : contas).filter((c) => c.type === "CREDIT");
-      const faturas = (await Promise.all(todosOsCartoes.map((c) => pluggy.listBills(c.id)))).flat();
-      const ehPagamentoFatura = billPaymentMatcher(faturas);
-
-      const porConta = await Promise.all(
-        contas.map(async (acc) =>
-          (await pluggy.listTransactions(acc.id, inicio, fim)).map((t) => toTransacao(t, acc, ehPagamentoFatura(t))),
+      // Para marcar pagamentoFatura no débito da conta corrente é preciso achar o par
+      // num cartão conectado, mesmo quando o app pediu só a conta corrente. Por isso
+      // buscamos também TODOS os cartões, com folga de 3 dias em cada ponta do período.
+      const cartoes = todasAsContas.filter((c) => c.type === "CREDIT");
+      const buscar = [...new Map([...pedidas, ...cartoes].map((c) => [c.id, c])).values()];
+      const [faturas, porConta] = await Promise.all([
+        Promise.all(cartoes.map((c) => pluggy.listBills(c.id))).then((l) => l.flat()),
+        Promise.all(
+          buscar.map(async (acc) => ({ acc, txs: await pluggy.listTransactions(acc.id, somarDias(inicio, -3), somarDias(fim, 3)) })),
         ),
-      );
-      const transacoes = porConta.flat().toSorted((a, b) => b.data.localeCompare(a.data));
+      ]);
+      const transacoesDosCartoes = porConta.filter(({ acc }) => acc.type === "CREDIT").flatMap(({ txs }) => txs);
+      const ehPagamento = billPaymentMatcher(faturas, transacoesDosCartoes);
+
+      const idsPedidos = new Set(pedidas.map((c) => c.id));
+      const noPeriodo = (data: string) => data.slice(0, 10) >= inicio && data.slice(0, 10) <= fim;
+      const transacoes = porConta
+        .filter(({ acc }) => idsPedidos.has(acc.id))
+        .flatMap(({ acc, txs }) =>
+          txs
+            .filter((t) => noPeriodo(t.date))
+            .map((t) => toTransacao(t, acc, acc.type === "CREDIT" ? ehPagamento.cartao(t) : ehPagamento.contaCorrente(t))),
+        )
+        .toSorted((a, b) => b.data.localeCompare(a.data));
 
       return ok({ periodo: { inicio, fim }, total: transacoes.length, transacoes });
     },

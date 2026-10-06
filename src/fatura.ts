@@ -17,7 +17,7 @@ export interface OpenBill {
 }
 
 export function estimateOpenBill(cardTransactions: Transaction[], closedBills: Bill[]): OpenBill {
-  const isBillPayment = billPaymentMatcher(closedBills);
+  const isBillPayment = billPaymentMatcher(closedBills).cartao;
   const transactions = cardTransactions.filter((t) => !t.creditCardMetadata?.billId && !isBillPayment(t));
 
   const sum = (list: Transaction[]) => list.reduce((acc, t) => acc + t.amount, 0);

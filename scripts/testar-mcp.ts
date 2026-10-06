@@ -86,8 +86,24 @@ check(
   "pagamento marcado nos dois lados (saída na conta e entrada no cartão)",
 );
 check(pagamentos.every((p) => (p.cartao ? p.tipo === "entrada" : p.tipo === "saida")), "pagamentos: saída na conta, entrada no cartão");
-// Sem par não é necessariamente erro: a conta que pagou pode não estar conectada.
-for (const p of semPar) console.log(`   ⚠️  sem par no período: ${p.data} ${p.contaNome} ${p.tipo} ${brl.format(p.valor)}`);
+// Na conta corrente, só marca com par num cartão conectado. No cartão, sem par pode acontecer:
+// a fatura pode ter sido paga por uma conta que não está conectada.
+check(semPar.every((p) => p.cartao), `nenhum débito em conta marcado sem par num cartão conectado`);
+for (const p of semPar) console.log(`   ⚠️  cartão sem par no período: ${p.data} ${p.contaNome} ${p.tipo} ${brl.format(p.valor)}`);
+check(
+  !lista.some((t) => !t.cartao && Math.abs(t.valor - 49.07) < 0.01 && t.pagamentoFatura),
+  "pagamento de cartão não conectado (R$ 49,07, Nubank) NÃO é marcado",
+);
+check(lista.every((t) => t.data >= inicio && t.data <= fim), "nenhuma transação fora do período pedido");
+
+// Filtrando só a conta corrente do C6, o par no cartão ainda precisa ser encontrado.
+const contaC6 = contas.find((c) => !c.cartao && c.banco === "C6 Bank");
+if (contaC6) {
+  const soC6: any[] = (await chamar("listar_transacoes", { dataInicio: "2026-09-20", contaId: contaC6.id })).structuredContent.transacoes;
+  const pg = soC6.find((t) => Math.abs(t.valor - 9648.41) < 0.01);
+  check(soC6.every((t) => t.contaId === contaC6.id), `filtro por conta: ${soC6.length} transações, todas do C6 BANK`);
+  check(pg?.pagamentoFatura === true, "com filtro só na conta C6, o pagamento de R$ 9.648,41 continua marcado");
+}
 console.log("   exemplos:");
 for (const t of [lista.find((t) => !t.cartao && t.tipo === "entrada"), lista.find((t) => !t.cartao && t.tipo === "saida"), lista.find((t) => t.cartao)]) {
   if (t) console.log("  ", JSON.stringify({ ...t, id: `${t.id.slice(0, 8)}…`, contaId: `${t.contaId.slice(0, 8)}…` }));
