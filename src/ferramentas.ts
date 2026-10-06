@@ -5,6 +5,7 @@ import * as z from "zod/v4";
 import type { Account, PluggyClient } from "./pluggy.ts";
 import { estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
+import { bancosPorConta } from "./bancos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
 
 const MAX_DIAS = 366;
@@ -40,13 +41,22 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
     "listar_contas",
     {
       title: "Listar contas",
-      description: "Lista as contas bancárias e cartões de crédito conectados, com saldo.",
+      description:
+        "Lista as contas bancárias e cartões de crédito conectados, com saldo, banco, titular e " +
+        "data da última sincronização da conexão.",
       outputSchema: z.object({ contas: z.array(ContaSchema) }),
       annotations: SOMENTE_LEITURA,
     },
     async () => {
-      const contas = (await listarTodasAsContas(pluggy, itemIds)).map(toConta);
-      return ok({ contas });
+      const [contas, items] = await Promise.all([
+        listarTodasAsContas(pluggy, itemIds),
+        Promise.all(itemIds.map((id) => pluggy.getItem(id))),
+      ]);
+      const atualizacao = new Map(items.map((it) => [it.id, it.lastUpdatedAt]));
+      const bancos = bancosPorConta(contas);
+      return ok({
+        contas: contas.map((acc) => toConta(acc, bancos.get(acc.id) ?? null, atualizacao.get(acc.itemId) ?? null)),
+      });
     },
   );
 

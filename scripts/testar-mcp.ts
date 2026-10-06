@@ -46,10 +46,22 @@ type Resultado = { structuredContent?: any; isError?: boolean; content?: any };
 const chamar = (name: string, args: Record<string, unknown> = {}) =>
   client.callTool({ name, arguments: args }) as Promise<Resultado>;
 
-const contas = await chamar("listar_contas");
-for (const c of contas.structuredContent.contas) {
-  console.log(`   ${c.cartao ? "💳" : "💰"} ${c.nome}: ${brl.format(c.saldo)}`);
+const contas: any[] = (await chamar("listar_contas")).structuredContent.contas;
+const iniciais = (nome: string | null) => (nome ? nome.split(/\s+/).map((p) => p[0]).join("") : "—");
+for (const c of contas) {
+  const quando = c.ultimaAtualizacao ? new Date(c.ultimaAtualizacao).toLocaleString("pt-BR") : "—";
+  console.log(
+    `   ${c.cartao ? "💳" : "💰"} ${c.nome.slice(0, 28).padEnd(28)} ${brl.format(c.saldo).padStart(13)} | ${String(c.banco).padEnd(16)} | titular ${iniciais(c.titular).padEnd(5)} | item ${c.itemId.slice(0, 8)}… | ${quando}`,
+  );
 }
+check(
+  contas.every((c) => typeof c.id === "string" && typeof c.nome === "string" && typeof c.cartao === "boolean" && typeof c.saldo === "number"),
+  "campos antigos (id, nome, cartao, saldo) mantidos",
+);
+check(contas.every((c) => "itemId" in c && "banco" in c && "titular" in c && "ultimaAtualizacao" in c), "campos novos presentes em todas as contas");
+check(contas.every((c) => c.banco), `banco preenchido em ${contas.filter((c) => c.banco).length}/${contas.length} contas`);
+check(contas.every((c) => c.titular), `titular preenchido em ${contas.filter((c) => c.titular).length}/${contas.length} contas`);
+check(contas.every((c) => c.ultimaAtualizacao), `ultimaAtualizacao preenchida em ${contas.filter((c) => c.ultimaAtualizacao).length}/${contas.length} contas`);
 
 const tx = await chamar("listar_transacoes", { dataInicio: "2026-09-20" });
 const lista: any[] = tx.structuredContent.transacoes;
@@ -66,11 +78,16 @@ console.log(`   ${categorias.size} categorias distintas, ex.: ${[...categorias].
 const pagamentos = lista.filter((t) => t.pagamentoFatura);
 console.log("   pagamentos de fatura marcados:");
 for (const p of pagamentos) console.log(`     ${p.data} ${p.contaNome.padEnd(10)} ${p.tipo.padEnd(7)} ${brl.format(p.valor)}  ${p.descricao}`);
+// Cada pagamento marcado deve ter o "par" do outro lado: saída numa conta ↔ entrada num cartão, mesmo valor.
+const temPar = (p: any) => pagamentos.some((q) => q !== p && q.cartao !== p.cartao && Math.abs(q.valor - p.valor) < 0.01);
+const semPar = pagamentos.filter((p) => !temPar(p));
 check(
   pagamentos.some((p) => !p.cartao && p.tipo === "saida") && pagamentos.some((p) => p.cartao && p.tipo === "entrada"),
   "pagamento marcado nos dois lados (saída na conta e entrada no cartão)",
 );
-check(pagamentos.every((p) => p.valor === pagamentos[0].valor), "nada além do pagamento foi marcado");
+check(pagamentos.every((p) => (p.cartao ? p.tipo === "entrada" : p.tipo === "saida")), "pagamentos: saída na conta, entrada no cartão");
+// Sem par não é necessariamente erro: a conta que pagou pode não estar conectada.
+for (const p of semPar) console.log(`   ⚠️  sem par no período: ${p.data} ${p.contaNome} ${p.tipo} ${brl.format(p.valor)}`);
 console.log("   exemplos:");
 for (const t of [lista.find((t) => !t.cartao && t.tipo === "entrada"), lista.find((t) => !t.cartao && t.tipo === "saida"), lista.find((t) => t.cartao)]) {
   if (t) console.log("  ", JSON.stringify({ ...t, id: `${t.id.slice(0, 8)}…`, contaId: `${t.contaId.slice(0, 8)}…` }));
@@ -87,17 +104,27 @@ check(faturas.structuredContent.faturas.length > 0, "listar_faturas_abertas resp
 
 // listar_faturas: histórico por mês (mês de referência = mês do vencimento).
 const todas: any[] = (await chamar("listar_faturas")).structuredContent.faturas;
-const abertas = todas.filter((f) => f.situacao === "aberta");
-check(abertas.length >= 1 && todas.length > abertas.length, `listar_faturas: ${abertas.length} aberta(s) + ${todas.length - abertas.length} fechadas`);
-for (const f of todas.slice(0, 4)) {
-  console.log(`   ${f.mesReferencia}  vence ${f.vencimento}  fecha ${f.fechamento ?? "—"}  ${brl.format(f.valor).padStart(12)}  ${f.situacao}${f.estimativa ? " (estimativa)" : ""}${f.paga ? " · paga" : ""}`);
+const cartoes = contas.filter((c) => c.cartao);
+const abertasPorCartao = cartoes.map((c) => todas.filter((f) => f.contaId === c.id && f.situacao === "aberta"));
+check(abertasPorCartao.every((a) => a.length === 1), `listar_faturas: 1 fatura aberta por cartão (${cartoes.length} cartões, ${todas.length} faturas no total)`);
+for (const c of cartoes) {
+  const doCartao = todas.filter((f) => f.contaId === c.id);
+  const aberta = doCartao.find((f) => f.situacao === "aberta");
+  const daOutra = faturas.structuredContent.faturas.find((f: any) => f.contaId === c.id);
+  console.log(`   💳 ${c.nome.slice(0, 24).padEnd(24)} ${doCartao.length - 1} fechadas | aberta ${aberta?.mesReferencia ?? "—"} ${brl.format(aberta?.valor ?? 0)}`);
+  check(aberta?.valor === daOutra?.valorEstimado, `   aberta de ${c.nome.slice(0, 24)} igual a listar_faturas_abertas`);
 }
-const porMes = async (mes: string) => (await chamar("listar_faturas", { mes })).structuredContent.faturas as any[];
-const [out, nov] = [await porMes("2026-10"), await porMes("2026-11")];
-check(out.length === 1 && out[0].situacao === "fechada" && out[0].paga, `mes 2026-10 → ${out.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")}`);
-const valorAberta = faturas.structuredContent.faturas[0]?.valorEstimado;
-check(nov.length === 1 && nov[0].situacao === "aberta" && nov[0].valor === valorAberta, `mes 2026-11 → ${nov.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")} (igual a listar_faturas_abertas)`);
-check(new Set(todas.filter((f) => f.contaId === todas[0].contaId).map((f) => f.valor)).size > 1, "meses diferentes têm valores diferentes");
+
+// Valores conhecidos do cartão do C6 (BANDEIRADO).
+const c6 = cartoes.find((c) => c.nome === "BANDEIRADO");
+if (c6) {
+  const porMes = async (mes: string) =>
+    ((await chamar("listar_faturas", { mes, contaId: c6.id })).structuredContent.faturas as any[]);
+  const [out, nov] = [await porMes("2026-10"), await porMes("2026-11")];
+  check(out.length === 1 && out[0].valor === 9648.41 && out[0].paga, `C6 2026-10 → ${out.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")}`);
+  check(nov.length === 1 && nov[0].situacao === "aberta", `C6 2026-11 → ${nov.map((f) => `${brl.format(f.valor)} ${f.situacao}`).join(", ")}`);
+  check(new Set(todas.filter((f) => f.contaId === c6.id).map((f) => f.valor)).size > 1, "meses diferentes têm valores diferentes");
+}
 const mesInvalido = await chamar("listar_faturas", { mes: "outubro" });
 check(mesInvalido.isError === true, "mês em formato inválido é recusado");
 

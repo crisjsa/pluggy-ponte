@@ -15,6 +15,9 @@ export interface Account {
   number: string;
   balance: number;
   currencyCode: string;
+  owner?: string | null;
+  // Só vem preenchido em contas do tipo BANK. transferNumber = "banco/agência/conta".
+  bankData?: { transferNumber?: string | null } | null;
   // Só vem preenchido em contas do tipo CREDIT (cartões).
   creditData?: {
     creditLimit: number | null;

@@ -27,13 +27,26 @@ export const ContaSchema = z.object({
   nome: z.string(),
   cartao: z.boolean(),
   saldo: z.number().describe("Conta: saldo disponível. Cartão: limite usado (inclui parcelas futuras)."),
+  itemId: z.string().describe("ID da conexão na Pluggy (o banco conectado no Meu Pluggy)"),
+  banco: z.string().nullable().describe("Instituição da conta, ex.: \"Nubank\", \"Banco XP S.A.\""),
+  titular: z.string().nullable().describe("Nome do dono da conta, se a Pluggy informar"),
+  ultimaAtualizacao: z.string().nullable().describe("Última sincronização da conexão com o banco (ISO 8601)"),
 });
 export type Conta = z.infer<typeof ContaSchema>;
 
 export const accountName = (acc: Account) => (acc.marketingName ?? acc.name).trim();
 
-export function toConta(acc: Account): Conta {
-  return { id: acc.id, nome: accountName(acc), cartao: acc.type === "CREDIT", saldo: acc.balance };
+export function toConta(acc: Account, banco: string | null, ultimaAtualizacao: string | null): Conta {
+  return {
+    id: acc.id,
+    nome: accountName(acc),
+    cartao: acc.type === "CREDIT",
+    saldo: acc.balance,
+    itemId: acc.itemId,
+    banco,
+    titular: acc.owner?.trim() || null,
+    ultimaAtualizacao,
+  };
 }
 
 // O sinal do amount da Pluggy é invertido entre conta e cartão:
