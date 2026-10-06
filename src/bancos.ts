@@ -44,6 +44,14 @@ function bancoDaConta(acc: Account): string | null {
   return acc.type === "BANK" ? (acc.marketingName ?? acc.name).trim() : null;
 }
 
+// Instituição onde ficam os investimentos de uma conexão: a corretora, se houver
+// (na XP, "XP Investimentos"); senão, o banco da conta corrente.
+export function bancoDosInvestimentos(contasDaConexao: Account[]): string | null {
+  const correntes = contasDaConexao.filter((c) => c.type === "BANK");
+  const custodiante = correntes.find((c) => CORRETORAS.has(codigoDoBanco(c) ?? "")) ?? correntes[0];
+  return custodiante ? bancoDaConta(custodiante) : null;
+}
+
 // Devolve o nome do banco de cada conta (por id), olhando as outras contas da mesma conexão.
 export function bancosPorConta(contas: Account[]): Map<string, string | null> {
   const resultado = new Map<string, string | null>();

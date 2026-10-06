@@ -5,7 +5,8 @@ import * as z from "zod/v4";
 import type { Account, PluggyClient } from "./pluggy.ts";
 import { billMonthResolver, estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
-import { bancosPorConta } from "./bancos.ts";
+import { bancoDosInvestimentos, bancosPorConta } from "./bancos.ts";
+import { InvestimentoSchema, MovimentoSchema, toInvestimento, toMovimento } from "./investimentos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
 
 const MAX_DIAS = 366;
@@ -28,6 +29,15 @@ const ok = <T extends Record<string, unknown>>(dados: T) => ({
   structuredContent: dados,
 });
 const erro = (mensagem: string) => ({ content: [{ type: "text" as const, text: mensagem }], isError: true });
+
+// Executa fn para cada item, no máximo `limite` ao mesmo tempo (para não sobrecarregar a API).
+async function emLotes<T, R>(itens: T[], limite: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const resultados: R[] = [];
+  for (let i = 0; i < itens.length; i += limite) {
+    resultados.push(...(await Promise.all(itens.slice(i, i + limite).map(fn))));
+  }
+  return resultados;
+}
 
 async function listarTodasAsContas(pluggy: PluggyClient, itemIds: string[]): Promise<Account[]> {
   const porItem = await Promise.all(itemIds.map((id) => pluggy.listAccounts(id)));
@@ -284,6 +294,86 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
         .toSorted((a, b) => (b.vencimento ?? "9999").localeCompare(a.vencimento ?? "9999"));
 
       return ok({ faturas });
+    },
+  );
+
+  // Investimentos de cada conexão, com banco e titular vindos das contas da mesma conexão
+  // (a Pluggy não informa instituição nem dono no investimento).
+  async function investimentosDasConexoes(filtroItemId?: string) {
+    const conexoes = filtroItemId ? itemIds.filter((id) => id === filtroItemId) : itemIds;
+    const porConexao = await Promise.all(
+      conexoes.map(async (itemId) => {
+        const [contas, investimentos] = await Promise.all([pluggy.listAccounts(itemId), pluggy.listInvestments(itemId)]);
+        const banco = bancoDosInvestimentos(contas);
+        const titular = contas.find((c) => c.owner?.trim())?.owner?.trim() ?? null;
+        return investimentos.map((inv) => ({ inv, banco, titular }));
+      }),
+    );
+    return porConexao.flat();
+  }
+
+  server.registerTool(
+    "listar_investimentos",
+    {
+      title: "Listar investimentos",
+      description:
+        "Lista os investimentos de todas as conexões (ações, FIIs, BDRs, fundos, renda fixa, Tesouro...) com " +
+        "quantidade, preço e valor atual em reais. Por padrão só os ativos; use incluirResgatados para ver também " +
+        "os já resgatados/vendidos. valorInvestido só vem quando a Pluggy informa (renda fixa); rentabilidade é " +
+        "calculada (valorAtual − valorInvestido) quando possível, indicado em rentabilidadeFonte.",
+      inputSchema: z.object({
+        incluirResgatados: z.boolean().optional().describe("Inclui investimentos já resgatados/vendidos. Padrão: false."),
+        itemId: z.string().optional().describe("Filtra por uma conexão (itemId de listar_contas)."),
+      }),
+      outputSchema: z.object({ total: z.number(), investimentos: z.array(InvestimentoSchema) }),
+      annotations: SOMENTE_LEITURA,
+    },
+    async ({ incluirResgatados, itemId }) => {
+      if (itemId && !itemIds.includes(itemId)) return erro(`Conexão ${itemId} não encontrada. Use listar_contas para ver os itemId.`);
+      const investimentos = (await investimentosDasConexoes(itemId))
+        .filter(({ inv }) => incluirResgatados || inv.status !== "TOTAL_WITHDRAWAL")
+        .map(({ inv, banco, titular }) => toInvestimento(inv, banco, titular))
+        .toSorted((a, b) => (b.valorAtual ?? 0) - (a.valorAtual ?? 0));
+      return ok({ total: investimentos.length, investimentos });
+    },
+  );
+
+  server.registerTool(
+    "listar_movimentos_investimentos",
+    {
+      title: "Listar movimentos de investimentos",
+      description:
+        "Lista movimentações de investimentos (compra, venda, dividendo, JCP, rendimento, amortização, imposto...) " +
+        "de todas as conexões, inclusive de investimentos já resgatados. Filtros opcionais por período, " +
+        "investimento e conexão. O histórico depende do que o banco envia à Pluggy e pode estar incompleto.",
+      inputSchema: z.object({
+        dataInicio: DATA.optional().describe("Início do período (AAAA-MM-DD). Padrão: sem limite."),
+        dataFim: DATA.optional().describe("Fim do período, inclusivo (AAAA-MM-DD). Padrão: sem limite."),
+        investimentoId: z.string().optional().describe("Filtra por um investimento (id de listar_investimentos)."),
+        itemId: z.string().optional().describe("Filtra por uma conexão."),
+      }),
+      outputSchema: z.object({ total: z.number(), movimentos: z.array(MovimentoSchema) }),
+      annotations: SOMENTE_LEITURA,
+    },
+    async ({ dataInicio, dataFim, investimentoId, itemId }) => {
+      if (dataInicio && dataFim && dataInicio > dataFim) return erro(`dataInicio (${dataInicio}) é depois de dataFim (${dataFim}).`);
+      if (itemId && !itemIds.includes(itemId)) return erro(`Conexão ${itemId} não encontrada. Use listar_contas para ver os itemId.`);
+
+      let investimentos = (await investimentosDasConexoes(itemId)).map(({ inv }) => inv);
+      if (investimentoId) {
+        investimentos = investimentos.filter((inv) => inv.id === investimentoId);
+        if (investimentos.length === 0) return erro(`Investimento ${investimentoId} não encontrado.`);
+      }
+
+      const porInvestimento = await emLotes(investimentos, 6, async (inv) =>
+        (await pluggy.listInvestmentTransactions(inv.id)).map((t) => toMovimento(t, inv)),
+      );
+      const movimentos = porInvestimento
+        .flat()
+        .filter((m) => (!dataInicio || m.data >= dataInicio) && (!dataFim || m.data <= dataFim))
+        .toSorted((a, b) => b.data.localeCompare(a.data));
+
+      return ok({ total: movimentos.length, movimentos });
     },
   );
 

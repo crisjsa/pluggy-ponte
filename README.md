@@ -16,6 +16,13 @@ Nada aqui escreve, paga ou move dinheiro: todas as ferramentas só leem.
 | `listar_transacoes` | `dataInicio`, `dataFim` (AAAA-MM-DD, padrão últimos 30 dias, máx. 366), `contaId` (opcional) | Lista de transações (formato abaixo) |
 | `listar_faturas_abertas` | `incluirLancamentos` (opcional) | Fatura aberta **estimada** de cada cartão, última fatura fechada e data da última sincronização |
 | `listar_faturas` | `mes` (AAAA-MM, opcional), `contaId` (opcional) | Faturas de cada cartão por mês: as fechadas (~12 meses) e a aberta (estimativa). `mesReferencia` = mês do **vencimento** |
+| `listar_investimentos` | `incluirResgatados`, `itemId` (opcionais) | Investimentos de todas as conexões: tipo/subtipo, código, quantidade, preço, valor bruto e líquido, valor investido e rentabilidade quando possível |
+| `listar_movimentos_investimentos` | `dataInicio`, `dataFim`, `investimentoId`, `itemId` (opcionais) | Compras, vendas e demais movimentos de investimentos |
+
+**Limites dos dados de investimentos (Meu Pluggy):** a Pluggy não informa instituição, titular,
+rentabilidade nem custo médio. Banco e titular vêm das contas da mesma conexão; a rentabilidade só é
+calculada (`rentabilidadeFonte: "calculada"`) quando há valor investido, o que nos dados reais só
+acontece em renda fixa. As movimentações trazem só compras e vendas, e na XP o histórico é parcial.
 
 Formato de cada transação:
 

@@ -2,6 +2,10 @@
 // Uso: npm run testar-mcp
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { InvestimentoSchema, MovimentoSchema } from "../src/investimentos.ts";
+
+const InvestimentoCampos = InvestimentoSchema.shape;
+const MovimentoCampos = MovimentoSchema.shape;
 
 process.loadEnvFile(".env");
 
@@ -39,7 +43,7 @@ await client.connect(
 );
 
 const { tools } = await client.listTools();
-check(tools.length === 4, `ferramentas: ${tools.map((t) => t.name).join(", ")}`);
+check(tools.length === 6, `ferramentas: ${tools.map((t) => t.name).join(", ")}`);
 check(tools.every((t) => t.annotations?.readOnlyHint === true), "todas marcadas como somente leitura");
 
 type Resultado = { structuredContent?: any; isError?: boolean; content?: any };
@@ -143,6 +147,48 @@ if (c6) {
 }
 const mesInvalido = await chamar("listar_faturas", { mes: "outubro" });
 check(mesInvalido.isError === true, "mês em formato inválido é recusado");
+
+// ---------- Investimentos ----------
+const ativos: any[] = (await chamar("listar_investimentos")).structuredContent.investimentos;
+const todosInv: any[] = (await chamar("listar_investimentos", { incluirResgatados: true })).structuredContent.investimentos;
+check(ativos.length > 0 && todosInv.length > ativos.length, `listar_investimentos: ${ativos.length} ativos, ${todosInv.length} com resgatados`);
+check(ativos.every((i) => i.status !== "resgatado"), "por padrão, nenhum resgatado");
+const campos = Object.keys(InvestimentoCampos);
+check(todosInv.every((i) => campos.every((c) => c in i)), "todos os campos presentes em todos os investimentos");
+
+// Preenchimento por conexão (o que a Pluggy entrega de verdade).
+const conexoes = [...new Set(todosInv.map((i) => i.itemId))];
+const preenchido = (v: unknown) => v !== null && v !== undefined && v !== "";
+for (const itemId of conexoes) {
+  const doItem = todosInv.filter((i) => i.itemId === itemId);
+  const tipos = [...new Set(doItem.map((i) => `${i.tipo}${i.subtipo && i.subtipo !== i.tipo ? `/${i.subtipo}` : ""}`))].join(", ");
+  console.log(`   📈 ${String(doItem[0].banco).padEnd(16)} item ${itemId.slice(0, 8)}… titular ${iniciais(doItem[0].titular).padEnd(5)} | ${doItem.length} inv. (${doItem.filter((i) => i.status === "ativo").length} ativos) | ${tipos}`);
+  const faltam = campos.filter((c) => !doItem.every((i) => preenchido(i[c])));
+  console.log(`      incompletos: ${faltam.map((c) => `${c} ${doItem.filter((i) => preenchido(i[c])).length}/${doItem.length}`).join(", ") || "nenhum"}`);
+}
+const totalBruto = ativos.reduce((s, i) => s + (i.valorAtual ?? 0), 0);
+console.log(`   valor bruto total dos ativos: ${brl.format(totalBruto)}`);
+
+const movs: any[] = (await chamar("listar_movimentos_investimentos")).structuredContent.movimentos;
+const idsInv = new Set(todosInv.map((i) => i.id));
+check(movs.length > 0 && movs.every((m) => idsInv.has(m.investimentoId)), `listar_movimentos_investimentos: ${movs.length} movimentos, todos ligados a um investimento`);
+const porTipo = movs.reduce((a: Record<string, number>, m) => ((a[m.tipo] = (a[m.tipo] ?? 0) + 1), a), {});
+console.log(`   por tipo: ${JSON.stringify(porTipo)} | de ${movs.at(-1)?.data} a ${movs[0]?.data}`);
+for (const itemId of conexoes) {
+  const ids = new Set(todosInv.filter((i) => i.itemId === itemId).map((i) => i.id));
+  const doItem = movs.filter((m) => ids.has(m.investimentoId));
+  const tiposItem = doItem.reduce((a: Record<string, number>, m) => ((a[m.tipo] = (a[m.tipo] ?? 0) + 1), a), {});
+  const banco = todosInv.find((i) => i.itemId === itemId)?.banco;
+  console.log(`   ${String(banco).padEnd(16)} item ${itemId.slice(0, 8)}…: ${doItem.length} movimentos ${JSON.stringify(tiposItem)}`);
+}
+const camposMov = Object.keys(MovimentoCampos);
+const faltamMov = camposMov.filter((c) => !movs.every((m) => preenchido(m[c])));
+console.log(`   movimentos — incompletos: ${faltamMov.map((c) => `${c} ${movs.filter((m) => preenchido(m[c])).length}/${movs.length}`).join(", ") || "nenhum"}`);
+const umInv = movs[0]?.investimentoId;
+const filtrado: any[] = (await chamar("listar_movimentos_investimentos", { investimentoId: umInv })).structuredContent.movimentos;
+check(filtrado.length > 0 && filtrado.every((m) => m.investimentoId === umInv), `filtro por investimento: ${filtrado.length} movimento(s)`);
+const ano: any[] = (await chamar("listar_movimentos_investimentos", { dataInicio: "2026-01-01" })).structuredContent.movimentos;
+check(ano.every((m) => m.data >= "2026-01-01"), `filtro por data: ${ano.length} movimento(s) desde 2026-01-01`);
 
 await client.close();
 console.log(falhas === 0 ? "\nTudo certo." : `\n${falhas} verificação(ões) falharam.`);

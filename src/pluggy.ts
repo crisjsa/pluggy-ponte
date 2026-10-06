@@ -73,6 +73,44 @@ export interface Item {
   lastUpdatedAt: string | null;
 }
 
+// Investimento. Nos dados reais (Meu Pluggy): owner e institution nunca vêm,
+// amountProfit e as taxas de rentabilidade (lastMonthRate etc.) também não.
+export interface Investment {
+  id: string;
+  itemId: string;
+  type: string; // FIXED_INCOME, EQUITY, MUTUAL_FUND, SECURITY, ETF, COE, OTHER
+  subtype: string | null; // CDB, LCA, STOCK, REAL_ESTATE_FUND, BDR, FIXED_INCOME_FUND, TREASURY...
+  name: string;
+  code: string | null; // ticker em ações/FIIs; CNPJ em fundos; código do título em renda fixa
+  isin: string | null;
+  quantity: number | null;
+  value: number | null; // preço unitário atual
+  amount: number | null; // valor bruto atual
+  balance: number | null; // valor líquido (descontados impostos)
+  amountOriginal: number | null; // valor investido (só renda fixa, nos dados reais)
+  amountProfit: number | null;
+  currencyCode: string | null;
+  date: string | null; // data da posição
+  dueDate: string | null;
+  rate: number | null;
+  rateType: string | null;
+  fixedAnnualRate: number | null;
+  status: string | null; // ACTIVE, TOTAL_WITHDRAWAL...
+}
+
+export interface InvestmentTransaction {
+  id: string;
+  type: string; // BUY, SELL (dados reais); a API prevê outros (dividendos, juros, impostos...)
+  movementType: string | null;
+  description: string | null;
+  date: string;
+  tradeDate: string | null;
+  quantity: number | null;
+  value: number | null; // preço unitário
+  amount: number | null; // valor bruto
+  netAmount: number | null; // valor líquido
+}
+
 interface Page<T> {
   total: number;
   totalPages: number;
@@ -159,6 +197,25 @@ export class PluggyClient {
     } while (after);
 
     return all;
+  }
+
+  // Percorre uma rota paginada por número de página (page/totalPages).
+  private async allPages<T>(path: string): Promise<T[]> {
+    const sep = path.includes("?") ? "&" : "?";
+    const all: T[] = [];
+    for (let page = 1; ; page++) {
+      const res = await this.get<Page<T>>(`${path}${sep}pageSize=500&page=${page}`);
+      all.push(...res.results);
+      if (page >= (res.totalPages ?? 1)) return all;
+    }
+  }
+
+  async listInvestments(itemId: string): Promise<Investment[]> {
+    return this.allPages<Investment>(`/investments?itemId=${encodeURIComponent(itemId)}`);
+  }
+
+  async listInvestmentTransactions(investmentId: string): Promise<InvestmentTransaction[]> {
+    return this.allPages<InvestmentTransaction>(`/investments/${encodeURIComponent(investmentId)}/transactions`);
   }
 }
 
