@@ -1,7 +1,8 @@
 // Converte investimentos e movimentações da Pluggy para o formato do app web.
 
 import * as z from "zod/v4";
-import type { Investment, InvestmentTransaction } from "./pluggy.ts";
+import { amountBRL, type Investment, type InvestmentTransaction, type Transaction } from "./pluggy.ts";
+import type { Provento } from "./proventos.ts";
 
 export const InvestimentoSchema = z.object({
   id: z.string(),
@@ -33,14 +34,18 @@ export const InvestimentoSchema = z.object({
 export type Investimento = z.infer<typeof InvestimentoSchema>;
 
 export const MovimentoSchema = z.object({
-  id: z.string(),
-  investimentoId: z.string(),
+  id: z.string().describe("Na origem \"conta\", é o id da transação em listar_transacoes"),
+  origem: z
+    .enum(["investimento", "conta"])
+    .describe("investimento = movimentação informada pela corretora; conta = provento achado no extrato da conta"),
+  investimentoId: z.string().nullable().describe("null se o provento não pôde ser ligado a um investimento pelo ticker"),
   investimentoNome: z.string(),
+  ticker: z.string().nullable(),
   data: z.string().describe("AAAA-MM-DD"),
   tipo: z.enum(["compra", "venda", "dividendo", "JCP", "rendimento", "amortização", "imposto", "transferência", "outro"]),
-  tipoPluggy: z.string(),
-  quantidade: z.number().nullable(),
-  precoUnitario: z.number().nullable(),
+  tipoPluggy: z.string().describe("Tipo do movimento na Pluggy; na origem \"conta\", a categoria da transação"),
+  quantidade: z.number().nullable().describe("Em proventos: cotas/ações que geraram o provento"),
+  precoUnitario: z.number().nullable().describe("Em proventos: valor por cota/ação"),
   valor: z.number().nullable().describe("Valor bruto"),
   valorLiquido: z.number().nullable(),
   descricao: z.string().nullable(),
@@ -151,6 +156,38 @@ export function toInvestimento(inv: Investment, banco: string | null, titular: s
   };
 }
 
+// Ticker só faz sentido em renda variável (em fundos o code é o CNPJ; em renda fixa, o código do título).
+const tickerDoInvestimento = (inv: Investment) => (inv.type === "EQUITY" || inv.type === "ETF" ? inv.code?.trim() || null : null);
+
+// Liga um provento ao investimento pelo ticker: primeiro na mesma conexão, depois em qualquer uma.
+// Também procura o código no nome (fundos fechados como "TGRI" vêm com o CNPJ no code).
+export function acharInvestimento(ticker: string | null, itemId: string, investimentos: Investment[]): Investment | null {
+  if (!ticker) return null;
+  const casa = (inv: Investment) =>
+    inv.code?.trim().toUpperCase() === ticker || new RegExp(`\\b${ticker}\\b`, "i").test(inv.name);
+  return investimentos.find((inv) => inv.itemId === itemId && casa(inv)) ?? investimentos.find(casa) ?? null;
+}
+
+export function proventoToMovimento(t: Transaction, provento: Provento, inv: Investment | null): Movimento {
+  const valor = arred(amountBRL(t));
+  const descricao = t.description.replace(/\s+/g, " ").trim();
+  return {
+    id: t.id,
+    origem: "conta",
+    investimentoId: inv?.id ?? null,
+    investimentoNome: inv ? inv.name.replace(/\s+/g, " ").trim() : (provento.ticker ?? descricao),
+    ticker: provento.ticker,
+    data: t.date.slice(0, 10),
+    tipo: provento.tipo,
+    tipoPluggy: t.category ?? "(sem categoria)",
+    quantidade: provento.quantidade,
+    precoUnitario: valor != null && provento.quantidade ? Math.round((valor / provento.quantidade) * 1e6) / 1e6 : null,
+    valor,
+    valorLiquido: valor, // valor creditado na conta (no JCP, já com o IR retido)
+    descricao,
+  };
+}
+
 // Tipos de movimento. Nos dados reais só vieram BUY e SELL; os demais seguem a API e a
 // descrição, para não perder dividendos/JCP se a Pluggy passar a enviá-los.
 function tipoDoMovimento(t: InvestmentTransaction): Movimento["tipo"] {
@@ -169,8 +206,10 @@ function tipoDoMovimento(t: InvestmentTransaction): Movimento["tipo"] {
 export function toMovimento(t: InvestmentTransaction, inv: Investment): Movimento {
   return {
     id: t.id,
+    origem: "investimento",
     investimentoId: inv.id,
     investimentoNome: inv.name.replace(/\s+/g, " ").trim(),
+    ticker: tickerDoInvestimento(inv),
     data: (t.date ?? t.tradeDate ?? "").slice(0, 10),
     tipo: tipoDoMovimento(t),
     tipoPluggy: t.type,

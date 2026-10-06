@@ -142,8 +142,11 @@ export class PluggyClient {
     return data.apiKey;
   }
 
-  // Faz um GET autenticado. Se a apiKey expirou (401), renova uma vez e tenta de novo.
-  private async get<T>(path: string, retry = true): Promise<T> {
+  // Faz um GET autenticado.
+  // - 401 (apiKey expirou): renova a apiKey uma vez e tenta de novo.
+  // - 429 (limite de requisições da Pluggy) ou 503: espera e tenta de novo, até 3 vezes.
+  //   Usa o Retry-After que a Pluggy manda; sem ele, 1 s, 2 s, 4 s. Nunca mais de 10 s por espera.
+  private async get<T>(path: string, retry = true, tentativa = 0): Promise<T> {
     this.apiKey ??= await this.authenticate();
 
     const res = await fetch(`${BASE_URL}${path}`, {
@@ -152,7 +155,18 @@ export class PluggyClient {
 
     if (res.status === 401 && retry) {
       this.apiKey = undefined;
-      return this.get<T>(path, false);
+      return this.get<T>(path, false, tentativa);
+    }
+    if ((res.status === 429 || res.status === 503) && tentativa < 3) {
+      const pedido = Number(res.headers.get("retry-after"));
+      const segundos = Math.min(Number.isFinite(pedido) && pedido > 0 ? pedido : 2 ** tentativa, 10);
+      await res.body?.cancel();
+      console.warn(`Pluggy HTTP ${res.status} em ${path.split("?")[0]}; nova tentativa em ${segundos}s`);
+      await new Promise((r) => setTimeout(r, segundos * 1000));
+      return this.get<T>(path, retry, tentativa + 1);
+    }
+    if (res.status === 429) {
+      throw new Error("A Pluggy limitou o número de requisições (HTTP 429). Tente de novo em alguns segundos.");
     }
     if (!res.ok) {
       const body = await res.text();

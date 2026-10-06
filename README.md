@@ -22,7 +22,15 @@ Nada aqui escreve, paga ou move dinheiro: todas as ferramentas só leem.
 **Limites dos dados de investimentos (Meu Pluggy):** a Pluggy não informa instituição, titular,
 rentabilidade nem custo médio. Banco e titular vêm das contas da mesma conexão; a rentabilidade só é
 calculada (`rentabilidadeFonte: "calculada"`) quando há valor investido, o que nos dados reais só
-acontece em renda fixa. As movimentações trazem só compras e vendas, e na XP o histórico é parcial.
+acontece em renda fixa. A rota de investimentos da Pluggy traz só compras e vendas, e na XP o histórico é parcial.
+
+**Proventos:** `listar_movimentos_investimentos` também inclui rendimentos, dividendos e JCP achados no
+extrato da conta corrente (`origem: "conta"`, mesmo `id` da transação), ligados ao investimento pelo
+ticker da descrição. Se o ticker não corresponder a nenhum investimento, `investimentoId` vem `null`.
+O extrato da XP Investimentos também é parcial (nos dados reais, só algumas semanas).
+
+As movimentações de cada investimento ficam em memória até a conexão sincronizar de novo, para não
+estourar o limite de requisições da Pluggy (HTTP 429).
 
 Formato de cada transação:
 
@@ -40,6 +48,8 @@ Formato de cada transação:
   "categoriaPluggy": "Shopping",
   "categoriaPluggyId": "08000000",
   "mesFatura": "2026-11",
+  "provento": false,
+  "tipoProvento": null,
   "pagamentoFatura": false
 }
 ```
@@ -48,6 +58,8 @@ Formato de cada transação:
 - `valor`: sempre positivo e **em reais**, inclusive em compras internacionais; o sentido está em `tipo` (`entrada` / `saida`).
 - `mesFatura`: só em cartão. Mês (AAAA-MM, do vencimento) da fatura da compra, pelo vínculo da Pluggy; sem fatura fechada vinculada, o mês da fatura aberta. Em conta corrente, `null`.
 - `pagamentoFatura`: `true` nos **dois lados** do pagamento de fatura (débito na conta e entrada no cartão). Na conta, só quando há par num cartão conectado: pagar um cartão não conectado é gasto. Um pagamento feito hoje pode ficar `false` até o banco do cartão sincronizar.
+
+- `provento` / `tipoProvento`: em conta corrente, `true` e `rendimento`, `dividendo` ou `JCP` quando a entrada é provento de um ativo (ex.: `RENDIMENTOS DE CLIENTES VGIP11 S/ 55`). JCP é reconhecido pela descrição, porque a Pluggy o categoriza como "Interests charged". "Rendimento automático" (saldo parado em conta) não conta como provento.
 
 Para conferir se a soma das compras de cada `mesFatura` bate com o valor da fatura: `npm start` e, em outro terminal, `npm run conferir-faturas`.
 - A fatura aberta é uma estimativa: pode ficar abaixo do app do banco se algum lançamento ainda não sincronizou (veja `ultimaSincronizacao`).

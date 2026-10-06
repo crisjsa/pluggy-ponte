@@ -171,7 +171,10 @@ console.log(`   valor bruto total dos ativos: ${brl.format(totalBruto)}`);
 
 const movs: any[] = (await chamar("listar_movimentos_investimentos")).structuredContent.movimentos;
 const idsInv = new Set(todosInv.map((i) => i.id));
-check(movs.length > 0 && movs.every((m) => idsInv.has(m.investimentoId)), `listar_movimentos_investimentos: ${movs.length} movimentos, todos ligados a um investimento`);
+// Da corretora: sempre ligados a um investimento. Proventos (origem "conta"): podem vir sem, se o ticker não casar.
+const daCorretora = movs.filter((m) => m.origem === "investimento");
+check(daCorretora.length > 0 && daCorretora.every((m) => idsInv.has(m.investimentoId)), `listar_movimentos_investimentos: ${daCorretora.length} da corretora, todos ligados a um investimento`);
+check(movs.every((m) => m.investimentoId === null || idsInv.has(m.investimentoId)), `nenhum investimentoId inválido (${movs.length} movimentos no total)`);
 const porTipo = movs.reduce((a: Record<string, number>, m) => ((a[m.tipo] = (a[m.tipo] ?? 0) + 1), a), {});
 console.log(`   por tipo: ${JSON.stringify(porTipo)} | de ${movs.at(-1)?.data} a ${movs[0]?.data}`);
 for (const itemId of conexoes) {
@@ -189,6 +192,39 @@ const filtrado: any[] = (await chamar("listar_movimentos_investimentos", { inves
 check(filtrado.length > 0 && filtrado.every((m) => m.investimentoId === umInv), `filtro por investimento: ${filtrado.length} movimento(s)`);
 const ano: any[] = (await chamar("listar_movimentos_investimentos", { dataInicio: "2026-01-01" })).structuredContent.movimentos;
 check(ano.every((m) => m.data >= "2026-01-01"), `filtro por data: ${ano.length} movimento(s) desde 2026-01-01`);
+
+// ---------- Proventos ----------
+const junho: any[] = (await chamar("listar_transacoes", { dataInicio: "2026-05-28", dataFim: "2026-06-18" })).structuredContent.transacoes;
+const provJun = junho.filter((t) => t.provento);
+const contagem = (l: any[]) => l.reduce((a: Record<string, number>, t) => ((a[t.tipoProvento ?? t.tipo] = (a[t.tipoProvento ?? t.tipo] ?? 0) + 1), a), {});
+check(provJun.length === 14, `proventos de 28/05 a 18/06: ${provJun.length} ${JSON.stringify(contagem(provJun))} (esperado 14)`);
+check(provJun.filter((t) => t.tipoProvento === "JCP").length === 2, "2 JCP (BBAS3) identificados pela descrição, apesar da categoria \"Interests charged\"");
+check(provJun.every((t) => !t.cartao && t.tipo === "entrada"), "todo provento é entrada em conta corrente");
+check(junho.every((t) => (t.provento ? t.tipoProvento !== null : t.tipoProvento === null)), "provento e tipoProvento coerentes");
+const marco: any[] = (await chamar("listar_transacoes", { dataInicio: "2026-03-01", dataFim: "2026-03-10" })).structuredContent.transacoes;
+const automatico = marco.filter((t) => /Rendimento autom/i.test(t.descricao));
+check(automatico.length > 0 && automatico.every((t) => !t.provento), `"Rendimento automático" (${automatico.length}) não é provento`);
+
+const doze: any[] = (await chamar("listar_transacoes", { dataInicio: "2025-10-07" })).structuredContent.transacoes;
+const provAno = doze.filter((t) => t.provento);
+console.log(`   proventos em 12 meses, todas as contas: ${provAno.length} ${JSON.stringify(contagem(provAno))}`);
+for (const t of provAno) console.log(`     ${t.data} ${t.contaNome.slice(0, 10).padEnd(10)} ${t.tipoProvento.padEnd(10)} ${brl.format(t.valor).padStart(10)}  ${t.descricao.slice(0, 50)}`);
+
+const movJun: any[] = (await chamar("listar_movimentos_investimentos", { dataInicio: "2026-05-28", dataFim: "2026-06-18" })).structuredContent.movimentos;
+const daConta = movJun.filter((m) => m.origem === "conta");
+check(daConta.length === 14, `movimentos de origem "conta" em junho: ${daConta.length} ${JSON.stringify(contagem(daConta))}`);
+const idsProv = new Set(provJun.map((t) => t.id));
+check(daConta.every((m) => idsProv.has(m.id)), "id do movimento = id da transação de provento");
+const ligados = daConta.filter((m) => m.investimentoId);
+check(ligados.every((m) => idsInv.has(m.investimentoId)), `${ligados.length}/${daConta.length} proventos ligados a um investimento existente`);
+const semLigacao = daConta.filter((m) => !m.investimentoId);
+if (semLigacao.length) console.log(`   ⚠️  sem investimento correspondente: ${semLigacao.map((m) => m.ticker ?? m.descricao).join(", ")}`);
+for (const m of daConta.slice(0, 3)) console.log(`   ex.: ${m.data} ${m.tipo} ${m.ticker} ${brl.format(m.valor)} = ${m.quantidade} × ${m.precoUnitario} → ${m.investimentoNome}`);
+const umFii = ligados[0];
+if (umFii) {
+  const soDele: any[] = (await chamar("listar_movimentos_investimentos", { investimentoId: umFii.investimentoId })).structuredContent.movimentos;
+  check(soDele.some((m) => m.id === umFii.id), `filtro por investimento inclui o provento de ${umFii.ticker}`);
+}
 
 await client.close();
 console.log(falhas === 0 ? "\nTudo certo." : `\n${falhas} verificação(ões) falharam.`);

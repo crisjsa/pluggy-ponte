@@ -3,6 +3,7 @@
 
 import * as z from "zod/v4";
 import { amountBRL, type Account, type Transaction } from "./pluggy.ts";
+import type { Provento } from "./proventos.ts";
 
 export const TransacaoSchema = z.object({
   id: z.string().describe("ID da transação na Pluggy. Use para evitar duplicadas."),
@@ -23,6 +24,8 @@ export const TransacaoSchema = z.object({
       "Só cartão: mesReferencia (AAAA-MM) da fatura a que a compra pertence, pelo vínculo da Pluggy. " +
         "Sem fatura fechada vinculada: mês da fatura aberta. Conta corrente: null.",
     ),
+  provento: z.boolean().describe("true em rendimento de FII/fundo, dividendo ou JCP creditado na conta"),
+  tipoProvento: z.enum(["rendimento", "dividendo", "JCP"]).nullable(),
   pagamentoFatura: z
     .boolean()
     .describe("true no pagamento de fatura de cartão (débito na conta e entrada no cartão). Some só um dos lados para não contar em dobro."),
@@ -58,7 +61,13 @@ export function toConta(acc: Account, banco: string | null, ultimaAtualizacao: s
 
 // O sinal do amount da Pluggy é invertido entre conta e cartão:
 //   conta:  negativo = saída     | cartão: positivo = compra (saída)
-export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boolean, mesFatura: string | null): Transacao {
+export function toTransacao(
+  t: Transaction,
+  acc: Account,
+  pagamentoFatura: boolean,
+  mesFatura: string | null,
+  provento: Provento | null = null,
+): Transacao {
   const cartao = acc.type === "CREDIT";
   const emReais = amountBRL(t);
   const saida = cartao ? emReais > 0 : emReais < 0;
@@ -79,6 +88,8 @@ export function toTransacao(t: Transaction, acc: Account, pagamentoFatura: boole
     categoriaPluggy: t.category ?? null,
     categoriaPluggyId: t.categoryId ?? null,
     mesFatura: cartao ? mesFatura : null,
+    provento: !cartao && provento !== null,
+    tipoProvento: cartao ? null : (provento?.tipo ?? null),
     pagamentoFatura,
   };
 }

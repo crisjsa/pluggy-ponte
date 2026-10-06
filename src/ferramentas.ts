@@ -2,11 +2,19 @@
 
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import type { Account, PluggyClient } from "./pluggy.ts";
+import type { Account, Investment, InvestmentTransaction, PluggyClient } from "./pluggy.ts";
 import { billMonthResolver, estimateOpenBill, openBillDates, openBillSearchStart } from "./fatura.ts";
 import { billPaymentMatcher } from "./pagamentos.ts";
 import { bancoDosInvestimentos, bancosPorConta } from "./bancos.ts";
-import { InvestimentoSchema, MovimentoSchema, toInvestimento, toMovimento } from "./investimentos.ts";
+import {
+  InvestimentoSchema,
+  MovimentoSchema,
+  acharInvestimento,
+  proventoToMovimento,
+  toInvestimento,
+  toMovimento,
+} from "./investimentos.ts";
+import { identificarProvento } from "./proventos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
 
 const MAX_DIAS = 366;
@@ -30,6 +38,20 @@ const ok = <T extends Record<string, unknown>>(dados: T) => ({
 });
 const erro = (mensagem: string) => ({ content: [{ type: "text" as const, text: mensagem }], isError: true });
 
+// Cache das movimentações de cada investimento, válido enquanto a conexão não sincronizar de novo.
+// listar_movimentos_investimentos faz uma chamada por investimento (~70) e a Pluggy limita as
+// requisições (HTTP 429). Movimentações só mudam quando a conexão sincroniza com o banco, então
+// a "versão" do cache é o lastUpdatedAt da conexão. Fica só na memória do processo.
+const cacheMovimentos = new Map<string, { versao: string; dados: InvestmentTransaction[] }>();
+
+async function movimentosDoInvestimento(pluggy: PluggyClient, inv: Investment, versao: string | null) {
+  const guardado = cacheMovimentos.get(inv.id);
+  if (versao && guardado?.versao === versao) return guardado.dados;
+  const dados = await pluggy.listInvestmentTransactions(inv.id);
+  if (versao) cacheMovimentos.set(inv.id, { versao, dados });
+  return dados;
+}
+
 // Executa fn para cada item, no máximo `limite` ao mesmo tempo (para não sobrecarregar a API).
 async function emLotes<T, R>(itens: T[], limite: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const resultados: R[] = [];
@@ -46,6 +68,19 @@ async function listarTodasAsContas(pluggy: PluggyClient, itemIds: string[]): Pro
 
 export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServer {
   const server = new McpServer({ name: "pluggy-ponte", version: "0.1.0" });
+
+  // O SDK transforma exceções das ferramentas em resposta de erro sem registrar nada no log.
+  // Aqui registramos o nome da ferramenta e a mensagem (nunca os dados), para diagnosticar no Railway.
+  const registrarOriginal = server.registerTool.bind(server);
+  server.registerTool = ((nome: string, config: unknown, callback: (...args: unknown[]) => Promise<unknown>) =>
+    registrarOriginal(nome, config as never, (async (...args: unknown[]) => {
+      try {
+        return await callback(...args);
+      } catch (e) {
+        console.error(`Erro na ferramenta ${nome}: ${(e as Error).message}`);
+        throw e;
+      }
+    }) as never)) as typeof server.registerTool;
 
   server.registerTool(
     "listar_contas",
@@ -126,7 +161,7 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
             .map((t) =>
               acc.type === "CREDIT"
                 ? toTransacao(t, acc, ehPagamento.cartao(t), mesDaFatura.get(acc.id)?.(t) ?? null)
-                : toTransacao(t, acc, ehPagamento.contaCorrente(t), null),
+                : toTransacao(t, acc, ehPagamento.contaCorrente(t), null, identificarProvento(t)),
             ),
         )
         .toSorted((a, b) => b.data.localeCompare(a.data));
@@ -344,8 +379,10 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
       title: "Listar movimentos de investimentos",
       description:
         "Lista movimentações de investimentos (compra, venda, dividendo, JCP, rendimento, amortização, imposto...) " +
-        "de todas as conexões, inclusive de investimentos já resgatados. Filtros opcionais por período, " +
-        "investimento e conexão. O histórico depende do que o banco envia à Pluggy e pode estar incompleto.",
+        "de todas as conexões, inclusive de investimentos já resgatados. Proventos (origem \"conta\") vêm do extrato " +
+        "da conta corrente e são ligados ao investimento pelo ticker; sem período, cobrem os últimos 12 meses. " +
+        "Filtros opcionais por período, investimento e conexão. O histórico depende do que o banco envia à Pluggy " +
+        "e pode estar incompleto.",
       inputSchema: z.object({
         dataInicio: DATA.optional().describe("Início do período (AAAA-MM-DD). Padrão: sem limite."),
         dataFim: DATA.optional().describe("Fim do período, inclusivo (AAAA-MM-DD). Padrão: sem limite."),
@@ -359,17 +396,45 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
       if (dataInicio && dataFim && dataInicio > dataFim) return erro(`dataInicio (${dataInicio}) é depois de dataFim (${dataFim}).`);
       if (itemId && !itemIds.includes(itemId)) return erro(`Conexão ${itemId} não encontrada. Use listar_contas para ver os itemId.`);
 
-      let investimentos = (await investimentosDasConexoes(itemId)).map(({ inv }) => inv);
-      if (investimentoId) {
-        investimentos = investimentos.filter((inv) => inv.id === investimentoId);
-        if (investimentos.length === 0) return erro(`Investimento ${investimentoId} não encontrado.`);
-      }
+      const todosOsInvestimentos = (await investimentosDasConexoes(itemId)).map(({ inv }) => inv);
+      const investimentos = investimentoId ? todosOsInvestimentos.filter((inv) => inv.id === investimentoId) : todosOsInvestimentos;
+      if (investimentoId && investimentos.length === 0) return erro(`Investimento ${investimentoId} não encontrado.`);
 
-      const porInvestimento = await emLotes(investimentos, 6, async (inv) =>
-        (await pluggy.listInvestmentTransactions(inv.id)).map((t) => toMovimento(t, inv)),
+      // 1) Compras/vendas informadas pela corretora (com cache por sincronização da conexão).
+      const versoes = new Map(
+        await Promise.all(
+          [...new Set(investimentos.map((inv) => inv.itemId))].map(async (id) => [id, (await pluggy.getItem(id)).lastUpdatedAt] as const),
+        ),
       );
-      const movimentos = porInvestimento
-        .flat()
+      const porInvestimento = await emLotes(investimentos, 6, async (inv) =>
+        (await movimentosDoInvestimento(pluggy, inv, versoes.get(inv.itemId) ?? null)).map((t) => toMovimento(t, inv)),
+      );
+
+      // 2) Proventos: só aparecem no extrato da conta corrente (ex.: conta da XP Investimentos).
+      //    Sem período informado, os últimos 12 meses (o histórico que a Pluggy guarda).
+      const fimProventos = dataFim ?? hoje();
+      const inicioProventos = dataInicio ?? somarDias(fimProventos, -365);
+      const janelas: [string, string][] = [];
+      for (let ini = inicioProventos; ini <= fimProventos; ini = somarDias(ini, 366)) {
+        const fim = somarDias(ini, 365);
+        janelas.push([ini, fim < fimProventos ? fim : fimProventos]);
+      }
+      const conexoes = itemId ? [itemId] : itemIds;
+      const correntes = (await Promise.all(conexoes.map((id) => pluggy.listAccounts(id)))).flat().filter((c) => c.type === "BANK");
+      const extratos = await emLotes(
+        correntes.flatMap((acc) => janelas.map((j) => ({ acc, j }))),
+        6,
+        async ({ acc, j }) => (await pluggy.listTransactions(acc.id, j[0], j[1])).map((t) => ({ t, acc })),
+      );
+      const proventos = extratos.flat().flatMap(({ t, acc }) => {
+        const provento = identificarProvento(t);
+        if (!provento) return [];
+        const inv = acharInvestimento(provento.ticker, acc.itemId, todosOsInvestimentos);
+        if (investimentoId && inv?.id !== investimentoId) return [];
+        return [proventoToMovimento(t, provento, inv)];
+      });
+
+      const movimentos = [...porInvestimento.flat(), ...proventos]
         .filter((m) => (!dataInicio || m.data >= dataInicio) && (!dataFim || m.data <= dataFim))
         .toSorted((a, b) => b.data.localeCompare(a.data));
 
