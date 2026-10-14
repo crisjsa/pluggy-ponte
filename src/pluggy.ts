@@ -118,8 +118,14 @@ interface Page<T> {
   results: T[];
 }
 
+// A apiKey da Pluggy vale 2 horas. Renovamos com 10 minutos de folga.
+const VALIDADE_APIKEY_MS = 2 * 60 * 60 * 1000;
+const FOLGA_APIKEY_MS = 10 * 60 * 1000;
+
 export class PluggyClient {
   private apiKey: string | undefined;
+  private apiKeyObtidaEm = 0; // Date.now() de quando a apiKey atual foi obtida
+  private renovacao: Promise<string> | null = null; // renovação em andamento, compartilhada
   private readonly clientId: string;
   private readonly clientSecret: string;
 
@@ -128,7 +134,37 @@ export class PluggyClient {
     this.clientSecret = clientSecret;
   }
 
-  // Troca clientId + clientSecret por uma apiKey temporária (~2h).
+  // apiKey válida: a atual, se ainda estiver longe de vencer; senão, uma nova.
+  private async chave(): Promise<string> {
+    const idade = Date.now() - this.apiKeyObtidaEm;
+    if (this.apiKey && idade < VALIDADE_APIKEY_MS - FOLGA_APIKEY_MS) return this.apiKey;
+    return this.renovar(this.apiKey ? "perto de vencer" : "primeira chave");
+  }
+
+  // Faz POST /auth. Chamadas em paralelo que precisem de chave nova esperam a MESMA renovação.
+  private renovar(motivo: string): Promise<string> {
+    this.renovacao ??= this.authenticate()
+      .then((nova) => {
+        this.apiKey = nova;
+        this.apiKeyObtidaEm = Date.now();
+        console.log(`Pluggy: apiKey renovada (${motivo})`); // nunca a chave em si
+        return nova;
+      })
+      .finally(() => {
+        this.renovacao = null;
+      });
+    return this.renovacao;
+  }
+
+  // A Pluggy recusou `usada`. Se outra chamada já trocou a chave nesse meio-tempo,
+  // usa a nova; senão descarta a recusada e renova (uma vez só, mesmo em paralelo).
+  private chaveDepoisDeRecusa(usada: string, status: number): Promise<string> {
+    if (this.apiKey && this.apiKey !== usada) return Promise.resolve(this.apiKey);
+    this.apiKey = undefined;
+    return this.renovar(`recusada pela Pluggy, HTTP ${status}`);
+  }
+
+  // Troca clientId + clientSecret por uma apiKey temporária (2h).
   private async authenticate(): Promise<string> {
     const res = await fetch(`${BASE_URL}/auth`, {
       method: "POST",
@@ -143,19 +179,23 @@ export class PluggyClient {
   }
 
   // Faz um GET autenticado.
-  // - 401 (apiKey expirou): renova a apiKey uma vez e tenta de novo.
+  // - apiKey recusada (401, ou 403 com API_KEY_MISSING_OR_INVALID, que é como a Pluggy
+  //   responde a uma chave vencida): renova a apiKey e repete a chamada uma vez.
   // - 429 (limite de requisições da Pluggy) ou 503: espera e tenta de novo, até 3 vezes.
   //   Usa o Retry-After que a Pluggy manda; sem ele, 1 s, 2 s, 4 s. Nunca mais de 10 s por espera.
-  private async get<T>(path: string, retry = true, tentativa = 0): Promise<T> {
-    this.apiKey ??= await this.authenticate();
-
+  private async get<T>(path: string, retry = true, tentativa = 0, chave?: string): Promise<T> {
+    const usada = chave ?? (await this.chave());
     const res = await fetch(`${BASE_URL}${path}`, {
-      headers: { "X-API-KEY": this.apiKey },
+      headers: { "X-API-KEY": usada },
     });
 
-    if (res.status === 401 && retry) {
-      this.apiKey = undefined;
-      return this.get<T>(path, false, tentativa);
+    if ((res.status === 401 || res.status === 403) && retry) {
+      const corpo = await res.text();
+      if (res.status === 401 || corpo.includes("API_KEY_MISSING_OR_INVALID")) {
+        const nova = await this.chaveDepoisDeRecusa(usada, res.status);
+        return this.get<T>(path, false, tentativa, nova);
+      }
+      throw new Error(`Erro da Pluggy em GET ${path} (HTTP ${res.status}): ${corpo}`);
     }
     if ((res.status === 429 || res.status === 503) && tentativa < 3) {
       const pedido = Number(res.headers.get("retry-after"));

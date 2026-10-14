@@ -205,7 +205,9 @@ const marco: any[] = (await chamar("listar_transacoes", { dataInicio: "2026-03-0
 const automatico = marco.filter((t) => /Rendimento autom/i.test(t.descricao));
 check(automatico.length > 0 && automatico.every((t) => !t.provento), `"Rendimento automático" (${automatico.length}) não é provento`);
 
-const doze: any[] = (await chamar("listar_transacoes", { dataInicio: "2025-10-07" })).structuredContent.transacoes;
+// 365 dias antes de hoje (a ferramenta aceita até 366 dias por chamada).
+const umAnoAtras = new Date(Date.now() - 365 * 86_400_000).toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
+const doze: any[] = (await chamar("listar_transacoes", { dataInicio: umAnoAtras })).structuredContent.transacoes;
 const provAno = doze.filter((t) => t.provento);
 console.log(`   proventos em 12 meses, todas as contas: ${provAno.length} ${JSON.stringify(contagem(provAno))}`);
 for (const t of provAno) console.log(`     ${t.data} ${t.contaNome.slice(0, 10).padEnd(10)} ${t.tipoProvento.padEnd(10)} ${brl.format(t.valor).padStart(10)}  ${t.descricao.slice(0, 50)}`);
