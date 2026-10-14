@@ -11,6 +11,7 @@
     "start": "node src/server.ts",
     "testar-mcp": "node scripts/testar-mcp.ts",
     "testar-apikey": "node scripts/testar-apikey.ts",
+    "testar-publico": "node scripts/testar-publico.ts",
     "contas": "node scripts/listar-contas.ts",
     "transacoes": "node scripts/listar-transacoes.ts",
     "diagnostico-fatura": "node scripts/diagnostico-fatura.ts",
