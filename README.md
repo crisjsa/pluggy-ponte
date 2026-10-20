@@ -4,7 +4,8 @@ Servidor **MCP remoto e somente leitura** que busca contas, transações e fatur
 [API da Pluggy](https://docs.pluggy.ai) (via Meu Pluggy) e entrega tudo num formato pronto para o
 app web de finanças, que roda como artifact no Claude e acessa o servidor pelo conector.
 
-Nada aqui escreve, paga ou move dinheiro: todas as ferramentas só leem.
+Nada aqui paga ou move dinheiro, nem altera dados na Pluggy. A única escrita é a das fotos mensais do
+patrimônio, guardadas num Postgres do próprio servidor.
 
 ---
 
@@ -18,6 +19,25 @@ Nada aqui escreve, paga ou move dinheiro: todas as ferramentas só leem.
 | `listar_faturas` | `mes` (AAAA-MM, opcional), `contaId` (opcional) | Faturas de cada cartão por mês: as fechadas (~12 meses) e a aberta (estimativa). `mesReferencia` = mês do **vencimento** |
 | `listar_investimentos` | `incluirResgatados`, `itemId` (opcionais) | Investimentos de todas as conexões: tipo/subtipo, código, quantidade, preço, valor bruto e líquido, valor investido e rentabilidade quando possível |
 | `listar_movimentos_investimentos` | `dataInicio`, `dataFim`, `investimentoId`, `itemId` (opcionais) | Compras, vendas e demais movimentos de investimentos |
+| `tirar_foto_patrimonio` | `mes` (opcional) | Tira agora a foto do patrimônio do mês (origem `manual`). Foto `fechada` é recusada: reabra antes |
+| `listar_fotos_patrimonio` | `de`, `ate`, `incluirDados` (opcionais) | Fotos mensais com totais, status e itens manuais |
+| `completar_foto_patrimonio` | `mes`, `itens_manuais`, `fechar` | Grava os itens lançados à mão (substitui a lista) e recalcula os totais |
+| `reabrir_foto_patrimonio` | `mes` | Volta a foto para `parcial` |
+
+### Fotos mensais do patrimônio
+
+A Pluggy só informa os valores do dia. Para formar histórico, o servidor guarda uma foto por mês na tabela
+`fotos_patrimonio` (Postgres, `DATABASE_URL`; a tabela é criada sozinha no primeiro uso):
+
+- **dados:** contas (não cartão), investimentos ativos, cartões (fatura aberta estimada, faturas fechadas não
+  pagas vencidas há até 40 dias ou a vencer, limite usado e parcelas futuras) e a última sincronização de cada conexão.
+- **totais:** `investimentos` (valor bruto), `contas`, `faturas_a_descontar` (abertas + fechadas não pagas),
+  `parcelas_futuras_info` (limite usado além disso, só informativo), `manuais` e
+  `patrimonio_liquido = investimentos + contas + manuais − faturas_a_descontar`.
+- **Automática:** todo dia às 23:30 (Brasília) o servidor confere se amanhã é dia 1; se for, tira a foto do mês
+  que termina. Foto `parcial` é atualizada (os itens manuais ficam); foto `fechada` não é tocada. O resultado
+  (nunca os valores) vai para o log do Railway. Se falhar, tenta de novo a cada minuto, até 5 vezes.
+- **Manual:** `npm run foto-patrimonio -- 2026-10` (use `--sem-salvar` para só ver os totais).
 
 **Limites dos dados de investimentos (Meu Pluggy):** a Pluggy não informa instituição, titular,
 rentabilidade nem custo médio. Banco e titular vêm das contas da mesma conexão; a rentabilidade só é
@@ -111,6 +131,7 @@ Outros scripts:
 | `npm run contas` | Saldo das contas, fatura aberta e última fatura fechada |
 | `npm run transacoes -- 7` | Transações dos últimos 7 dias (padrão: 30) |
 | `npm run diagnostico-fatura` | Detalha a conta da fatura aberta e a última sincronização com o banco |
+| `npm run foto-patrimonio -- [AAAA-MM]` | Tira a foto do patrimônio e mostra os totais (`--sem-salvar` só mostra) |
 | `npm run conferir-pendentes` | Verifica se o id das transações pendentes se mantém quando são confirmadas |
 | `npm run typecheck` | Confere os tipos do TypeScript |
 
@@ -127,6 +148,7 @@ Outros scripts:
 | `MCP_PORT` | não | Porta local (padrão 3333). No Railway é ignorada: ele usa `PORT` |
 | `MCP_ALLOWED_IPS` | não | Faixas de IP aceitas no modo público (padrão: a do Claude, `160.79.104.0/21`) |
 | `MCP_PUBLIC_HOST` | não | Domínio público, se não for o domínio gerado pelo Railway |
+| `DATABASE_URL` | não | Postgres das fotos do patrimônio. No Railway: `${{Postgres.DATABASE_URL}}`. Sem ela, as fotos ficam desligadas |
 
 O `.env` **nunca** vai para o Git. No Railway, as variáveis ficam na aba **Variables** do serviço.
 
@@ -169,7 +191,7 @@ O Claude não deixa editar a autenticação depois. Para trocar o token, remova 
 
 ## Segurança
 
-- Somente leitura: nenhuma ferramenta altera dados na Pluggy ou no banco.
+- Nenhuma ferramenta altera dados na Pluggy ou no banco; só as fotos do patrimônio gravam, no Postgres do servidor.
 - Os logs registram só método, caminho, status e IP, nunca o conteúdo.
 - O token é comparado em tempo constante e nunca vai no endereço (URL).
 - Segredos ficam no `.env` (fora do Git) e nas variáveis do Railway.

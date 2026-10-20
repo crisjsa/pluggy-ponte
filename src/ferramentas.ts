@@ -16,10 +16,15 @@ import {
 } from "./investimentos.ts";
 import { identificarProvento } from "./proventos.ts";
 import { ContaSchema, TransacaoSchema, accountName, toConta, toTransacao } from "./formato.ts";
+import type { Foto, FotosPatrimonio } from "./fotos.ts";
+import { ItemManualSchema, TotaisSchema, coletarDados, mesAtual } from "./patrimonio.ts";
 
 const MAX_DIAS = 366;
 const DATA = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use o formato AAAA-MM-DD");
+const MES = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use o formato AAAA-MM");
 const SOMENTE_LEITURA = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+// Ferramentas de foto do patrimônio: só gravam no banco de dados do próprio servidor, nunca na Pluggy.
+const GRAVA_FOTO = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 // "Hoje" no fuso de Brasília, para o padrão de datas não pular de dia à noite.
 const hoje = () => new Date().toLocaleDateString("sv-SE", { timeZone: "America/Sao_Paulo" });
@@ -66,7 +71,7 @@ async function listarTodasAsContas(pluggy: PluggyClient, itemIds: string[]): Pro
   return porItem.flat();
 }
 
-export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServer {
+export function criarServidor(pluggy: PluggyClient, itemIds: string[], fotos: FotosPatrimonio | null): McpServer {
   const server = new McpServer({ name: "pluggy-ponte", version: "0.1.0" });
 
   // O SDK transforma exceções das ferramentas em resposta de erro sem registrar nada no log.
@@ -439,6 +444,117 @@ export function criarServidor(pluggy: PluggyClient, itemIds: string[]): McpServe
         .toSorted((a, b) => b.data.localeCompare(a.data));
 
       return ok({ total: movimentos.length, movimentos });
+    },
+  );
+
+  // ---------- Fotos mensais do patrimônio ----------
+
+  const FotoSchema = z.object({
+    mes: z.string(),
+    tiradaEm: z.string(),
+    origem: z.enum(["automatica", "manual"]),
+    status: z.enum(["parcial", "fechada"]),
+    totais: TotaisSchema,
+    itensManuais: z.array(ItemManualSchema),
+    atualizadaEm: z.string(),
+    dados: z.record(z.string(), z.unknown()).optional().describe("Contas, investimentos, cartões e conexões do dia da foto"),
+  });
+  const resumo = (f: Foto, comDados = false) => {
+    const { dados, ...resto } = f;
+    return comDados ? { ...resto, dados: dados as unknown as Record<string, unknown> } : resto;
+  };
+  const semBanco = () => erro("Fotos do patrimônio indisponíveis: DATABASE_URL não configurada no servidor.");
+
+  server.registerTool(
+    "tirar_foto_patrimonio",
+    {
+      title: "Tirar foto do patrimônio",
+      description:
+        "Tira agora a foto do patrimônio (contas, investimentos ativos, faturas de cartão e última sincronização de " +
+        "cada banco) e grava no mês indicado (padrão: mês atual), com origem 'manual'. Se a foto do mês já existe, " +
+        "atualiza os dados e recalcula os totais, mantendo os itens manuais. Foto 'fechada' é recusada: use " +
+        "reabrir_foto_patrimonio antes.",
+      inputSchema: z.object({
+        mes: MES.optional().describe("Mês da foto (AAAA-MM). Padrão: mês atual no horário de Brasília."),
+        forcar: z
+          .boolean()
+          .optional()
+          .describe("Sem efeito: foto fechada é sempre recusada (use reabrir_foto_patrimonio). Mantido por compatibilidade."),
+      }),
+      outputSchema: z.object({ foto: FotoSchema }),
+      annotations: GRAVA_FOTO,
+    },
+    async ({ mes }) => {
+      if (!fotos) return semBanco();
+      const alvo = mes ?? mesAtual();
+      const { foto, motivo } = await fotos.salvar(alvo, await coletarDados(pluggy, itemIds), "manual");
+      if (!foto) return erro(motivo!);
+      console.log(`Foto do patrimônio ${alvo}: salva (manual)`);
+      return ok({ foto: resumo(foto) });
+    },
+  );
+
+  server.registerTool(
+    "listar_fotos_patrimonio",
+    {
+      title: "Listar fotos do patrimônio",
+      description:
+        "Lista as fotos mensais do patrimônio (mais antiga primeiro) com totais, status, origem e itens manuais. " +
+        "Use incluirDados para receber também as contas, investimentos e cartões de cada foto.",
+      inputSchema: z.object({
+        de: MES.optional().describe("Primeiro mês (AAAA-MM), inclusivo."),
+        ate: MES.optional().describe("Último mês (AAAA-MM), inclusivo."),
+        incluirDados: z.boolean().optional().describe("Inclui os dados completos de cada foto. Padrão: false."),
+      }),
+      outputSchema: z.object({ total: z.number(), fotos: z.array(FotoSchema) }),
+      annotations: { ...SOMENTE_LEITURA, openWorldHint: false },
+    },
+    async ({ de, ate, incluirDados }) => {
+      if (!fotos) return semBanco();
+      if (de && ate && de > ate) return erro(`de (${de}) é depois de ate (${ate}).`);
+      const lista = (await fotos.listar(de, ate)).map((f) => resumo(f, incluirDados ?? false));
+      return ok({ total: lista.length, fotos: lista });
+    },
+  );
+
+  server.registerTool(
+    "completar_foto_patrimonio",
+    {
+      title: "Completar foto do patrimônio",
+      description:
+        "Grava os itens lançados à mão na foto de um mês (dólar, renda fixa fora da Pluggy, imóvel, outro), em reais. " +
+        "SUBSTITUI a lista de itens manuais anterior (mande a lista completa) e recalcula os totais. " +
+        "fechar=true marca a foto como 'fechada' (a foto automática não a sobrescreve mais).",
+      inputSchema: z.object({
+        mes: MES.describe("Mês da foto (AAAA-MM)."),
+        itens_manuais: z.array(ItemManualSchema).describe("Lista completa de itens manuais do mês. [] remove todos."),
+        fechar: z.boolean().optional().describe("Fecha a foto. Padrão: false."),
+      }),
+      outputSchema: z.object({ foto: FotoSchema }),
+      annotations: GRAVA_FOTO,
+    },
+    async ({ mes, itens_manuais, fechar }) => {
+      if (!fotos) return semBanco();
+      const { foto, motivo } = await fotos.completar(mes, itens_manuais, fechar ?? false);
+      if (!foto) return erro(motivo!);
+      return ok({ foto: resumo(foto) });
+    },
+  );
+
+  server.registerTool(
+    "reabrir_foto_patrimonio",
+    {
+      title: "Reabrir foto do patrimônio",
+      description: "Volta a foto de um mês para 'parcial', para permitir correções.",
+      inputSchema: z.object({ mes: MES.describe("Mês da foto (AAAA-MM).") }),
+      outputSchema: z.object({ foto: FotoSchema }),
+      annotations: GRAVA_FOTO,
+    },
+    async ({ mes }) => {
+      if (!fotos) return semBanco();
+      const foto = await fotos.reabrir(mes);
+      if (!foto) return erro(`Não há foto de ${mes}.`);
+      return ok({ foto: resumo(foto) });
     },
   );
 

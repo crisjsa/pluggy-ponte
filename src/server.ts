@@ -18,6 +18,8 @@ import {
 } from "@modelcontextprotocol/node";
 import { PluggyClient, loadConfig } from "./pluggy.ts";
 import { criarServidor } from "./ferramentas.ts";
+import { fotosDoAmbiente } from "./fotos.ts";
+import { agendarFotoMensal } from "./patrimonio.ts";
 
 // Em desenvolvimento lê o .env; em produção as variáveis vêm do painel da hospedagem.
 try {
@@ -86,8 +88,13 @@ function autorizado(req: IncomingMessage): boolean {
 // Um único cliente Pluggy para todas as requisições: reaproveita a apiKey (~2h).
 const pluggy = new PluggyClient(clientId, clientSecret);
 
+// Fotos mensais do patrimônio no Postgres. Sem DATABASE_URL, as ferramentas de foto respondem com erro.
+const fotos = fotosDoAmbiente();
+if (fotos) agendarFotoMensal(pluggy, itemIds, fotos);
+else console.warn("DATABASE_URL não definida: fotos do patrimônio desligadas.");
+
 // Stateless: o SDK chama a fábrica e cria um McpServer novo a cada requisição.
-const handler = createMcpHandler(() => criarServidor(pluggy, itemIds));
+const handler = createMcpHandler(() => criarServidor(pluggy, itemIds, fotos));
 const mcp = toNodeHandler(handler, { onerror: (e) => console.error("Erro no MCP:", e.message) });
 
 const server = createServer((req, res) => {
@@ -126,6 +133,7 @@ server.listen(port, host, () => {
 
 const encerrar = async () => {
   await handler.close();
+  await fotos?.fechar();
   server.close(() => process.exit(0));
 };
 process.on("SIGINT", encerrar);

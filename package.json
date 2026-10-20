@@ -17,16 +17,19 @@
     "diagnostico-fatura": "node scripts/diagnostico-fatura.ts",
     "conferir-pendentes": "node scripts/conferir-pendentes.ts",
     "conferir-faturas": "node scripts/conferir-faturas.ts",
+    "foto-patrimonio": "node scripts/foto-patrimonio.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
     "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
     "typescript": "^7.0.2"
   },
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",
     "@modelcontextprotocol/server": "^2.3.1",
+    "pg": "^8.23.1",
     "zod": "^4.6.5"
   }
 }
