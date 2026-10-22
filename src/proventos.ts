@@ -23,6 +23,9 @@ const DIVIDENDO = /DIVIDEND/i;
 const RENDIMENTO = /RENDIMENTOS?\s+DE\s+CLIENTES|RENDIMENTOS?\s+(DE\s+)?FUNDO|RENDIMENTOS?\s+(DE\s+)?FII|PROVENTO/i;
 // Rendimento do saldo parado na conta (conta remunerada): não é provento de um ativo.
 const NAO_E_PROVENTO = /RENDIMENTO\s+AUTOM/i;
+// Resultado de operações em bolsa (a Pluggy às vezes categoriza como "Proceeds interests and
+// dividends"): ajuste de day trade e líquido das operações não são proventos.
+const OPERACAO_EM_BOLSA = /^(AJUSTE\s+DAY[\s-]?TRADE|L[IÍ]QUIDO\s+DAS\s+OPERA[CÇ][OÕ]ES)/i;
 
 const TICKER_B3 = /\b([A-Z]{4}\d{1,2}[A-Z]?)\b/; // VGIP11, BBAS3, TAEE11, KNUQ11B...
 const CODIGO_BALCAO = /BALC[AÃ]O\s+([A-Z0-9]{3,8})\b/i; // fundo fechado negociado em balcão
@@ -31,7 +34,7 @@ const QUANTIDADE = /S\/\s*(\d+)\s*$/; // "... S/ 55" no fim da descrição
 export function identificarProvento(t: Transaction): Provento | null {
   if (amountBRL(t) <= 0) return null; // provento é sempre entrada
   const descricao = t.description.replace(/\s+/g, " ").trim();
-  if (NAO_E_PROVENTO.test(descricao)) return null;
+  if (NAO_E_PROVENTO.test(descricao) || OPERACAO_EM_BOLSA.test(descricao)) return null;
 
   let tipo: TipoProvento | null = null;
   if (JCP.test(descricao)) tipo = "JCP";
