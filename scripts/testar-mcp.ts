@@ -43,8 +43,21 @@ await client.connect(
 );
 
 const { tools } = await client.listTools();
-check(tools.length === 6, `ferramentas: ${tools.map((t) => t.name).join(", ")}`);
-check(tools.every((t) => t.annotations?.readOnlyHint === true), "todas marcadas como somente leitura");
+const leitura = [
+  "listar_contas",
+  "listar_transacoes",
+  "listar_faturas_abertas",
+  "listar_faturas",
+  "listar_investimentos",
+  "listar_movimentos_investimentos",
+  "listar_fotos_patrimonio",
+];
+// Gravam dados: o teste só confere que existem, nunca as executa.
+const gravacao = ["tirar_foto_patrimonio", "completar_foto_patrimonio", "reabrir_foto_patrimonio"];
+const nomes = tools.map((t) => t.name);
+check(tools.length === 10, `ferramentas (${tools.length}): ${nomes.join(", ")}`);
+check([...leitura, ...gravacao].every((n) => nomes.includes(n)), "as 10 ferramentas esperadas existem");
+check(leitura.every((n) => tools.find((t) => t.name === n)?.annotations?.readOnlyHint === true), "as 7 de leitura marcadas como somente leitura");
 
 type Resultado = { structuredContent?: any; isError?: boolean; content?: any };
 const chamar = (name: string, args: Record<string, unknown> = {}) =>
@@ -226,6 +239,14 @@ const umFii = ligados[0];
 if (umFii) {
   const soDele: any[] = (await chamar("listar_movimentos_investimentos", { investimentoId: umFii.investimentoId })).structuredContent.movimentos;
   check(soDele.some((m) => m.id === umFii.id), `filtro por investimento inclui o provento de ${umFii.ticker}`);
+}
+
+// ---------- Fotos do patrimônio (só leitura) ----------
+const fotos = await chamar("listar_fotos_patrimonio");
+if (fotos.isError && /DATABASE_URL/.test(fotos.content?.[0]?.text ?? "")) {
+  console.log("   ⚠️  listar_fotos_patrimonio: servidor sem DATABASE_URL, resposta não verificada");
+} else {
+  check(!fotos.isError && fotos.structuredContent !== undefined, "listar_fotos_patrimonio respondeu");
 }
 
 await client.close();
